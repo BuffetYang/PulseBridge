@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import secrets
+import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -13,8 +14,16 @@ from urllib.parse import parse_qs, urlparse
 from .config import APP_NAME, APP_VERSION, Config
 from .db import Database
 from .ingest import normalize_payload
+from .puls import (
+    PROTOCOL_VERSION,
+    PulsError,
+    UnsupportedProtocol,
+    decompress_body,
+    parse_batch,
+)
 
 MAX_BODY_BYTES = 25 * 1024 * 1024
+MAX_PULS_COMPRESSED_BYTES = 64 * 1024 * 1024
 
 IngestCallback = Callable[[dict[str, Any]], None]
 
@@ -58,6 +67,9 @@ class _Handler(BaseHTTPRequestHandler):
         self._send(status, body)
 
     def _token_from_request(self) -> str | None:
+        auth = self.headers.get("Authorization") or ""
+        if auth.lower().startswith("bearer "):
+            return auth[7:].strip()
         header = self.headers.get("X-PulseBridge-Token") or self.headers.get(
             "X-Auth-Token"
         )
@@ -71,11 +83,11 @@ class _Handler(BaseHTTPRequestHandler):
         provided = self._token_from_request()
         return bool(provided) and secrets.compare_digest(provided, self.app.config.token)
 
-    def _read_body(self) -> bytes:
+    def _read_body(self, max_bytes: int = MAX_BODY_BYTES) -> bytes:
         length = int(self.headers.get("Content-Length") or 0)
         if length <= 0:
             raise ValueError("请求体为空")
-        if length > MAX_BODY_BYTES:
+        if length > max_bytes:
             raise ValueError("请求体过大")
         body = self.rfile.read(length)
         if len(body) != length:
@@ -89,12 +101,149 @@ class _Handler(BaseHTTPRequestHandler):
             b"",
             extra_headers={
                 "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-                "Access-Control-Allow-Headers": "Content-Type, X-PulseBridge-Token",
+                "Access-Control-Allow-Headers": "Content-Type, X-PulseBridge-Token, Authorization",
             },
         )
 
+    # -- PulsHealth 协议 -------------------------------------------------
+    def _unsupported_protocol(self) -> None:
+        self._json(
+            400,
+            {
+                "error": "unsupported protocol version",
+                "supportedVersions": [PROTOCOL_VERSION],
+            },
+        )
+
+    def _puls_protocol_ok(self) -> bool:
+        proto = (self.headers.get("X-Puls-Protocol") or "").strip()
+        if not proto:
+            return True
+        return proto.isdigit() and int(proto) == PROTOCOL_VERSION
+
+    def _handle_puls_batch(self) -> None:
+        remote = self.client_address[0] if self.client_address else None
+        if not self._authorized():
+            self._json(401, {"error": "unauthorized"})
+            return
+        if not self._puls_protocol_ok():
+            self._unsupported_protocol()
+            return
+
+        length = int(self.headers.get("Content-Length") or 0)
+        if length <= 0:
+            self._json(400, {"error": "empty body"})
+            return
+        if length > MAX_PULS_COMPRESSED_BYTES:
+            self._json(413, {"error": "body too large"})
+            return
+
+        try:
+            raw = self._read_body(MAX_PULS_COMPRESSED_BYTES)
+            text = decompress_body(raw, self.headers.get("Content-Encoding"))
+            batch = parse_batch(text)
+            proto = (self.headers.get("X-Puls-Protocol") or "").strip()
+            if proto and batch.header.get("schemaVersion") not in (None, int(proto)):
+                raise UnsupportedProtocol(
+                    "X-Puls-Protocol disagrees with schemaVersion"
+                )
+
+            samples_new, samples_dupe = self.app.db.insert_samples(batch.samples)
+            workouts_new, workouts_dupe = self.app.db.insert_workouts(batch.workouts)
+            deleted = self.app.db.delete_by_uuids(batch.deletions)
+
+            new_total = samples_new + workouts_new
+            if batch.total or deleted:
+                self.app.db.record_ingest(
+                    remote=remote,
+                    device="PulsHealth",
+                    samples_new=samples_new,
+                    samples_dupe=samples_dupe,
+                    workouts_new=workouts_new,
+                    workouts_dupe=workouts_dupe,
+                    status="ok",
+                    message=(
+                        f"Puls {batch.header.get('reason') or 'incremental'} "
+                        f"batch {str(batch.header.get('batchID') or '')[:8]}"
+                    ),
+                )
+            if new_total and self.app.on_ingest:
+                try:
+                    self.app.on_ingest(
+                        {
+                            "ok": True,
+                            "samples_new": samples_new,
+                            "samples_duplicate": samples_dupe,
+                            "workouts_new": workouts_new,
+                            "workouts_duplicate": workouts_dupe,
+                            "warnings": [],
+                            "device": "PulsHealth",
+                            "remote": remote,
+                            "received_at": int(time.time()),
+                        }
+                    )
+                except Exception:
+                    pass
+
+            self._json(
+                200,
+                {
+                    "accepted": samples_new + workouts_new,
+                    "deleted": deleted,
+                    "duplicates": samples_dupe + workouts_dupe,
+                    "routePoints": 0,
+                    "seriesPoints": 0,
+                    "aggregateSamples": 0,
+                    "activitySummaries": 0,
+                },
+            )
+        except UnsupportedProtocol:
+            self._unsupported_protocol()
+        except PulsError as exc:
+            try:
+                self.app.db.record_ingest(
+                    remote=remote,
+                    device="PulsHealth",
+                    samples_new=0,
+                    samples_dupe=0,
+                    workouts_new=0,
+                    workouts_dupe=0,
+                    status="error",
+                    message=str(exc),
+                )
+            except Exception:
+                pass
+            self._json(exc.status, {"error": str(exc)})
+        except ValueError as exc:
+            self._json(400, {"error": str(exc)})
+        except Exception as exc:  # noqa: BLE001
+            # 5xx 会被 App 自动重试；这里只在真正未知错误时使用
+            self._json(500, {"error": str(exc)})
+
     def do_GET(self) -> None:  # noqa: N802
         path = urlparse(self.path).path.rstrip("/") or "/"
+
+        if path.endswith("/healthz"):
+            self._json(200, {"ok": True})
+            return
+
+        if path.endswith("/v1/capabilities"):
+            if not self._authorized():
+                self._json(401, {"error": "unauthorized"})
+                return
+            if not self._puls_protocol_ok():
+                self._unsupported_protocol()
+                return
+            self._json(
+                200,
+                {
+                    "protocolVersions": [PROTOCOL_VERSION],
+                    "features": ["batches"],
+                    "server": APP_NAME,
+                    "version": APP_VERSION,
+                },
+            )
+            return
 
         if path in ("/", "/index.html"):
             self._send(200, self._status_page().encode("utf-8"), "text/html; charset=utf-8")
@@ -153,6 +302,9 @@ class _Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802
         path = urlparse(self.path).path.rstrip("/") or "/"
+        if path.endswith("/v1/batches"):
+            self._handle_puls_batch()
+            return
         if path not in ("/api/ingest", "/ingest"):
             self._json(404, {"ok": False, "error": "Not found"})
             return
@@ -281,7 +433,9 @@ class _Handler(BaseHTTPRequestHandler):
 
 class IngestServer(ThreadingHTTPServer):
     daemon_threads = True
-    allow_reuse_address = True
+    # Windows 上 SO_REUSEADDR 允许多个进程绑定同一端口，容易造成“两个程序都在跑”的假象；
+    # 关闭它，端口被占用时直接报错。
+    allow_reuse_address = sys.platform != "win32"
 
     def __init__(
         self,

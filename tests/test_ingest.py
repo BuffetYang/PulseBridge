@@ -129,6 +129,50 @@ def test_workout_type_and_uuid_dedupe_across_sources() -> None:
     assert first["duration_s"] == 1800
 
 
+def test_single_sample_payload() -> None:
+    result = normalize_payload(
+        {
+            "device": "iPhone",
+            "type": "heart_rate",
+            "start": "2026-11-12T23:20:00+08:00",
+            "end": "2026-11-12T23:20:00+08:00",
+            "value": 72,
+            "unit": "count/min",
+            "source": "Test",
+        }
+    )
+    assert len(result.samples) == 1
+    assert result.samples[0]["type"] == "heart_rate"
+    assert result.samples[0]["value"] == 72.0
+
+    wrapped = normalize_payload(
+        {
+            "device": "iPhone",
+            "sample": {
+                "type": "steps",
+                "start": "2026-11-12T23:20:00+08:00",
+                "end": "2026-11-12T23:21:00+08:00",
+                "value": 120,
+            },
+        }
+    )
+    assert len(wrapped.samples) == 1
+    assert wrapped.samples[0]["type"] == "steps"
+
+
+def test_single_sample_without_timestamps_defaults_to_now() -> None:
+    import time
+
+    before = int(time.time())
+    result = normalize_payload(
+        {"device": "iPhone", "type": "heart_rate", "value": 72, "unit": "count/min"}
+    )
+    assert len(result.samples) == 1
+    sample = result.samples[0]
+    assert sample["start_ts"] >= before
+    assert sample["end_ts"] == sample["start_ts"]
+
+
 def test_rejects_empty_payload() -> None:
     import pytest
 

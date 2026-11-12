@@ -31,7 +31,8 @@ from PySide6.QtWidgets import (
 from .. import analytics, startup
 from ..config import APP_NAME, APP_VERSION, Config
 from ..db import Database
-from ..guide import build_guide_html, shortcut_payload_template
+from ..firewall import add_firewall_rule_elevated
+from ..guide import build_guide_html, build_puls_guide_html, shortcut_payload_template
 from ..server import ServerController
 from ..util import (
     activity_emoji,
@@ -44,6 +45,8 @@ from ..util import (
     humanize_ago,
     local_date_label,
     local_time_label,
+    local_ipv4_addresses,
+    primary_lan_ip,
     weekday_label,
 )
 from .charts import BarChart, LineChart, StageBar
@@ -717,6 +720,8 @@ class SyncPage(QWidget):
         config: Config,
         controller: ServerController,
         open_guide: Callable[[], None],
+        open_puls_guide: Callable[[], None] | None = None,
+        on_address_changed: Callable[[], None] | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -724,7 +729,10 @@ class SyncPage(QWidget):
         self.config = config
         self.controller = controller
         self.open_guide = open_guide
+        self.open_puls_guide = open_puls_guide
+        self.on_address_changed = on_address_changed
         self._qr_url = ""
+        self.selected_ip = str(config.get("lan_ip") or primary_lan_ip())
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -752,25 +760,45 @@ class SyncPage(QWidget):
         self.pill_row.addStretch(1)
         service_card.body.addLayout(self.pill_row)
 
+        ip_row = QHBoxLayout()
+        ip_row.setSpacing(10)
+        ip_label = QLabel("网络地址（点击切换）")
+        ip_label.setObjectName("subtle")
+        ip_row.addWidget(ip_label)
+        self.ip_combo = QComboBox()
+        self.ip_combo.setMinimumWidth(190)
+        self.ip_combo.setToolTip(
+            "选择手机能访问的电脑地址。VMware / VirtualBox 等虚拟网卡地址手机无法访问。"
+        )
+        self.ip_combo.currentTextChanged.connect(self._on_ip_changed)
+        ip_row.addWidget(self.ip_combo)
+        arrow = QLabel("▾")
+        arrow.setStyleSheet(f"color: {COLORS['muted']}; font-size: 13px;")
+        ip_row.addWidget(arrow)
+        ip_row.addStretch(1)
+        service_card.body.addLayout(ip_row)
+
         self.url_row = CopyRow("局域网地址（在 iPhone 上打开可验证连接）")
         self.endpoint_row = CopyRow("同步接口 URL")
+        self.ping_row = CopyRow("连接测试 URL（GET，无需 Token）")
         self.token_row = CopyRow("访问令牌（Token）", secret=True)
         service_card.body.addWidget(self.url_row)
         service_card.body.addWidget(self.endpoint_row)
+        service_card.body.addWidget(self.ping_row)
         service_card.body.addWidget(self.token_row)
         service_card.body.addWidget(Divider())
 
         hint = QLabel(
-            "iPhone 与电脑需连接同一个 Wi-Fi。首次启动时若 Windows 防火墙弹窗，"
-            "请勾选「专用网络」并允许访问。"
+            "iPhone 与电脑需连接同一个 Wi-Fi。如果手机打不开且电脑没有弹防火墙提示，"
+            "点击「修复防火墙」并同意管理员授权；地址请选择 Wi-Fi 网卡对应的那一项。"
         )
         hint.setWordWrap(True)
         hint.setObjectName("subtle")
         service_card.body.addWidget(hint)
 
         buttons = QHBoxLayout()
-        guide_button = QPushButton("打开 iPhone 配置指南")
-        guide_button.setObjectName("primaryButton")
+        guide_button = QPushButton("快捷指令配置指南")
+        guide_button.setObjectName("ghostButton")
         guide_button.setCursor(Qt.CursorShape.PointingHandCursor)
         guide_button.clicked.connect(self.open_guide)
         buttons.addWidget(guide_button)
@@ -779,9 +807,47 @@ class SyncPage(QWidget):
         test_button.setCursor(Qt.CursorShape.PointingHandCursor)
         test_button.clicked.connect(self._check_service)
         buttons.addWidget(test_button)
+        firewall_button = QPushButton("修复防火墙")
+        firewall_button.setObjectName("ghostButton")
+        firewall_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        firewall_button.setToolTip("需要管理员权限，会弹出 UAC 确认框")
+        firewall_button.clicked.connect(self._fix_firewall)
+        buttons.addWidget(firewall_button)
         buttons.addStretch(1)
         service_card.body.addLayout(buttons)
         left.addWidget(service_card)
+
+        puls_card = Card()
+        puls_card.body.addLayout(
+            card_header(
+                "PulsHealth 自动同步（推荐）",
+                "免费 App · 最多 5 类数据 · 不需要快捷指令",
+            )
+        )
+        puls_desc = QLabel(
+            "在 iPhone 上安装免费的 PulsHealth，把 Database URL 填成上方的局域网地址、"
+            "Token 填成上方的访问令牌，开启自动同步即可。免费版支持最近 30 天、最多 5 类数据。"
+        )
+        puls_desc.setWordWrap(True)
+        puls_desc.setObjectName("subtle")
+        puls_card.body.addWidget(puls_desc)
+        puls_steps = QLabel(
+            "1. App Store 搜索并安装 PulsHealth\n"
+            "2. Sync → Database → Your Own Database：填入地址与 Token，Test Connection\n"
+            "3. 选择 5 类数据并允许健康权限，开启自动同步"
+        )
+        puls_steps.setWordWrap(True)
+        puls_steps.setStyleSheet(f"color: {COLORS['muted']}; font-size: 12px;")
+        puls_card.body.addWidget(puls_steps)
+        puls_buttons = QHBoxLayout()
+        puls_guide_button = QPushButton("打开 PulsHealth 配置指南")
+        puls_guide_button.setObjectName("primaryButton")
+        puls_guide_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        puls_guide_button.clicked.connect(self.open_puls_guide or self.open_guide)
+        puls_buttons.addWidget(puls_guide_button)
+        puls_buttons.addStretch(1)
+        puls_card.body.addLayout(puls_buttons)
+        left.addWidget(puls_card)
 
         metrics_card = Card()
         metrics_card.body.addLayout(card_header("已接收的指标", "按样本数量排序"))
@@ -801,7 +867,10 @@ class SyncPage(QWidget):
         self.qr_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.qr_label.setFixedHeight(190)
         qr_card.body.addWidget(self.qr_label)
-        qr_hint = QLabel("能看到「接收服务运行中」页面，说明手机与电脑已连通。")
+        qr_hint = QLabel(
+            "能看到「接收服务运行中」页面，说明手机与电脑已连通。\n"
+            "iOS 18.2+ 若提示「无法建立安全连接」，请关闭 Safari 的「不安全连接警告」。"
+        )
         qr_hint.setWordWrap(True)
         qr_hint.setObjectName("subtle")
         qr_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -824,14 +893,81 @@ class SyncPage(QWidget):
         self.refresh()
 
     # ------------------------------------------------------------------
+    def _sync_ip_options(self) -> None:
+        addresses = local_ipv4_addresses() or ["127.0.0.1"]
+        configured = str(self.config.get("lan_ip") or "").strip()
+        if configured and configured in addresses:
+            current = configured
+        else:
+            current = addresses[0]
+            if configured != current:
+                self.config.set("lan_ip", current)
+
+        existing = [
+            self.ip_combo.itemText(index) for index in range(self.ip_combo.count())
+        ]
+        if existing != addresses or self.ip_combo.currentText() != current:
+            self.ip_combo.blockSignals(True)
+            self.ip_combo.clear()
+            self.ip_combo.addItems(addresses)
+            index = self.ip_combo.findText(current)
+            self.ip_combo.setCurrentIndex(max(0, index))
+            self.ip_combo.blockSignals(False)
+        self.selected_ip = current
+
+    def _on_ip_changed(self, ip: str) -> None:
+        if not ip:
+            return
+        self.config.set("lan_ip", ip)
+        self.selected_ip = ip
+        self._qr_url = ""
+        self.refresh()
+        if self.on_address_changed:
+            self.on_address_changed()
+
+    def _fix_firewall(self) -> None:
+        port = self.controller.port
+        answer = QMessageBox.question(
+            self,
+            "修复 Windows 防火墙",
+            f"Windows 将当前 Wi-Fi 识别为公用网络，默认会拦截手机的入站连接。\n\n"
+            f"接下来会请求管理员权限，为 TCP 端口 {port} 添加入站规则"
+            f"（仅允许同一局域网访问）。出现 UAC 弹窗时请点击「是」。\n\n继续吗？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        launched, error = add_firewall_rule_elevated(port)
+        if launched:
+            QMessageBox.information(
+                self,
+                "已发起修复",
+                f"防火墙规则正在添加。请等待几秒后，用 iPhone Safari 打开：\n\n"
+                f"{self._base_url()}\n\n"
+                "如果仍然打不开，请确认手机与电脑在同一 Wi-Fi，且路由器未开启 AP 隔离。",
+            )
+        else:
+            QMessageBox.warning(
+                self,
+                "未能自动修复",
+                f"{error}\n\n"
+                "请右键「终端（管理员）」并执行：\n\n"
+                f'netsh advfirewall firewall add rule name="PulseBridge Health Receiver" '
+                f"dir=in action=allow protocol=TCP localport={port} "
+                f"profile=any remoteip=localsubnet",
+            )
+
     def _base_url(self) -> str:
-        return app_base_url(self.controller.port)
+        return app_base_url(self.controller.port, self.selected_ip)
 
     def refresh(self) -> None:
+        self._sync_ip_options()
         base = self._base_url()
         endpoint = f"{base}/api/ingest"
         self.url_row.set_value(base)
         self.endpoint_row.set_value(endpoint)
+        self.ping_row.set_value(f"{base}/api/ping")
         self.token_row.set_value(self.config.token)
         self.port_label.setText(f"端口 {self.controller.port} · 监听 0.0.0.0")
 
@@ -1315,8 +1451,42 @@ def export_data(parent: QWidget, days: int = 30) -> None:
 
 
 def open_guide_dialog(parent: QWidget, base_url: str, token: str) -> None:
+    _open_guide_dialog(
+        parent,
+        "快捷指令配置指南",
+        build_guide_html(base_url, token),
+        base_url,
+        token,
+        copy_value=f"{base_url}/api/ingest",
+        copy_label="复制接口地址",
+        template=shortcut_payload_template(base_url),
+    )
+
+
+def open_puls_guide_dialog(parent: QWidget, base_url: str, token: str) -> None:
+    _open_guide_dialog(
+        parent,
+        "PulsHealth 自动同步配置",
+        build_puls_guide_html(base_url, token),
+        base_url,
+        token,
+        copy_value=base_url,
+        copy_label="复制数据库地址",
+    )
+
+
+def _open_guide_dialog(
+    parent: QWidget,
+    title: str,
+    html_text: str,
+    base_url: str,
+    token: str,
+    copy_value: str | None = None,
+    copy_label: str = "复制接口地址",
+    template: dict | None = None,
+) -> None:
     dialog = QDialog(parent)
-    dialog.setWindowTitle("iPhone 快捷指令配置指南")
+    dialog.setWindowTitle(title)
     dialog.resize(820, 720)
     layout = QVBoxLayout(dialog)
     layout.setContentsMargins(18, 18, 18, 16)
@@ -1324,15 +1494,15 @@ def open_guide_dialog(parent: QWidget, base_url: str, token: str) -> None:
 
     browser = QTextBrowser()
     browser.setOpenExternalLinks(True)
-    browser.setHtml(build_guide_html(base_url, token))
+    browser.setHtml(html_text)
     layout.addWidget(browser, 1)
 
     buttons = QHBoxLayout()
-    copy_url = QPushButton("复制接口地址")
+    copy_url = QPushButton(copy_label)
     copy_url.setObjectName("ghostButton")
     copy_url.setCursor(Qt.CursorShape.PointingHandCursor)
     copy_url.clicked.connect(
-        lambda: _copy_and_flash(copy_url, f"{base_url}/api/ingest")
+        lambda: _copy_and_flash(copy_url, copy_value or base_url)
     )
     buttons.addWidget(copy_url)
 
@@ -1342,16 +1512,17 @@ def open_guide_dialog(parent: QWidget, base_url: str, token: str) -> None:
     copy_token.clicked.connect(lambda: _copy_and_flash(copy_token, token))
     buttons.addWidget(copy_token)
 
-    copy_json = QPushButton("复制 JSON 示例")
-    copy_json.setObjectName("ghostButton")
-    copy_json.setCursor(Qt.CursorShape.PointingHandCursor)
-    copy_json.clicked.connect(
-        lambda: _copy_and_flash(
-            copy_json,
-            json.dumps(shortcut_payload_template(base_url), ensure_ascii=False, indent=2),
+    if template is not None:
+        copy_json = QPushButton("复制 JSON 示例")
+        copy_json.setObjectName("ghostButton")
+        copy_json.setCursor(Qt.CursorShape.PointingHandCursor)
+        copy_json.clicked.connect(
+            lambda: _copy_and_flash(
+                copy_json,
+                json.dumps(template, ensure_ascii=False, indent=2),
+            )
         )
-    )
-    buttons.addWidget(copy_json)
+        buttons.addWidget(copy_json)
     buttons.addStretch(1)
 
     close_button = QPushButton("关闭")

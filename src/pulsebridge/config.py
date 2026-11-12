@@ -19,6 +19,7 @@ DEFAULT_PORT = 8765
 DEFAULTS: dict[str, Any] = {
     "port": DEFAULT_PORT,
     "token": "",
+    "lan_ip": "",
     "launch_at_startup": False,
     "start_minimized": False,
     "close_to_tray": True,

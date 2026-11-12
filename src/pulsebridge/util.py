@@ -19,6 +19,10 @@ _DATE_FORMATS = (
     "%Y/%m/%d %H:%M:%S",
     "%Y-%m-%dT%H:%M",
     "%Y-%m-%d %H:%M",
+    "%Y年%m月%d日 %H:%M:%S",
+    "%Y年%m月%d日 %H:%M",
+    "%Y年%m月%d日",
+    "%Y/%m/%d %H:%M",
 )
 
 
@@ -391,8 +395,28 @@ def fmt_hours(minutes: float | None) -> str:
 # 网络
 # ---------------------------------------------------------------------------
 
+def _default_route_ip() -> str | None:
+    """通过 UDP connect 探测默认路由使用的本机地址（最有可能是 Wi-Fi/以太网）。"""
+    for probe in ("8.8.8.8", "223.5.5.5", "114.114.114.114"):
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            sock.connect((probe, 80))
+            ip = str(sock.getsockname()[0])
+            if ip and not ip.startswith(("127.", "0.", "169.254.")):
+                return ip
+        except OSError:
+            pass
+        finally:
+            sock.close()
+    return None
+
+
 def local_ipv4_addresses() -> list[str]:
-    """枚举本机可用的局域网 IPv4 地址，优先常见私网段。"""
+    """枚举本机可用的局域网 IPv4 地址，默认路由地址排在最前。
+
+    很多电脑装了 VMware / VirtualBox / Hyper-V，虚拟网卡也会出现在地址列表里
+    （例如 192.168.119.1），手机无法访问这些地址，所以必须优先使用默认路由地址。
+    """
     found: set[str] = set()
 
     def _add(ip: str) -> None:
@@ -402,13 +426,16 @@ def local_ipv4_addresses() -> list[str]:
             return
         found.add(ip)
 
+    default_ip = _default_route_ip()
+    if default_ip:
+        _add(default_ip)
+
     try:
         for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
             _add(str(info[4][0]))
     except OSError:
         pass
 
-    # UDP connect 技巧：不会真的发包，但能得到默认路由网卡地址
     for probe in ("8.8.8.8", "223.5.5.5"):
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         try:
@@ -419,14 +446,16 @@ def local_ipv4_addresses() -> list[str]:
         finally:
             sock.close()
 
-    def _rank(ip: str) -> tuple[int, str]:
+    def _rank(ip: str) -> tuple[int, int, str]:
+        if default_ip and ip == default_ip:
+            return (0, 0, ip)
         if ip.startswith("192.168."):
-            return (0, ip)
+            return (1, 0, ip)
         if ip.startswith("10."):
-            return (1, ip)
+            return (2, 0, ip)
         if ip.startswith("172."):
-            return (2, ip)
-        return (3, ip)
+            return (3, 0, ip)
+        return (4, 0, ip)
 
     return sorted(found, key=_rank)
 
@@ -436,8 +465,8 @@ def primary_lan_ip() -> str:
     return addresses[0] if addresses else "127.0.0.1"
 
 
-def app_base_url(port: int) -> str:
-    return f"http://{primary_lan_ip()}:{port}"
+def app_base_url(port: int, ip: str | None = None) -> str:
+    return f"http://{ip or primary_lan_ip()}:{port}"
 
 
 def display_activity(activity_type: str) -> str:

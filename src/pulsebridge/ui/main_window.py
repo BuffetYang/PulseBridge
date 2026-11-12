@@ -36,6 +36,7 @@ from .pages import (
     WorkoutsPage,
     export_data,
     open_guide_dialog,
+    open_puls_guide_dialog,
 )
 from .theme import COLORS
 
@@ -87,7 +88,14 @@ class MainWindow(QMainWindow):
         )
         self.trends = TrendsPage(db)
         self.workouts = WorkoutsPage(db)
-        self.sync = SyncPage(db, config, controller, self._open_guide)
+        self.sync = SyncPage(
+            db,
+            config,
+            controller,
+            self._open_guide,
+            open_puls_guide=self._open_puls_guide,
+            on_address_changed=self._update_sidebar_status,
+        )
         self.ai = AiPage(db, lambda: export_data(self.ai, 30))
         self.settings = SettingsPage(db, config, controller, self.refresh_all)
         self.pages = [
@@ -280,15 +288,31 @@ class MainWindow(QMainWindow):
                 f"端口 {port} · 最近同步 {humanize_ago(stats['last_sync_ts'])}"
             )
         else:
+            address = str(self.config.get("lan_ip") or primary_lan_ip())
             self.side_last.setText(
-                f"端口 {port} · {primary_lan_ip()} · 等待首次同步"
+                f"端口 {port} · {address} · 等待首次同步"
             )
 
     # ------------------------------------------------------------------
     def _open_guide(self) -> None:
         from ..util import app_base_url
 
-        open_guide_dialog(self, app_base_url(self.controller.port), self.config.token)
+        address = str(self.config.get("lan_ip") or primary_lan_ip())
+        open_guide_dialog(
+            self,
+            app_base_url(self.controller.port, address),
+            self.config.token,
+        )
+
+    def _open_puls_guide(self) -> None:
+        from ..util import app_base_url
+
+        address = str(self.config.get("lan_ip") or primary_lan_ip())
+        open_puls_guide_dialog(
+            self,
+            app_base_url(self.controller.port, address),
+            self.config.token,
+        )
 
     def closeEvent(self, event) -> None:  # noqa: N802
         if self._quitting or not bool(self.config.get("close_to_tray", True)):

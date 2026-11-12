@@ -182,7 +182,7 @@ def main() -> int:
     seed(db)
 
     config = Config(data_dir / "config.json")
-    config.set("port", 8765)
+    config.set("port", int(os.environ.get("PULSEBRIDGE_DEMO_PORT", "18765")))
 
     app = QApplication([])
     app.setApplicationName("PulseBridge")

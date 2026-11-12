@@ -3,10 +3,11 @@
 **本地优先的 Apple 健康数据看板（Windows 桌面端）。**
 
 PulseBridge 让你的 iPhone / Apple Watch 健康与运动数据自动出现在 Windows 上：
-电脑端内置一个局域网接收服务，iPhone 自带的「快捷指令」定时把 HealthKit 数据以 JSON
-POST 过来，程序归一化后存入本地 SQLite，并用一个精致的深色仪表盘展示。
+电脑端内置一个局域网接收服务；iPhone 端既可以用**免费的 PulsHealth App 自动后台同步**，
+也可以用 iOS 自带的「快捷指令」手动搭建。数据归一化后存入本地 SQLite，
+并用一个精致的深色仪表盘展示。
 
-- **完全免费**：不依赖任何付费 App，只使用 iOS 自带的快捷指令。
+- **完全免费**：PulsHealth 免费版即可自动同步 5 类数据；也支持纯系统快捷指令，无需付费 App。
 - **本地优先**：数据只存在你的电脑上，不上传云端，不注册账号。
 - **开箱即用**：单个桌面程序，内置接收服务、托盘常驻、开机自启、二维码配对。
 - **为 AI 打底**：结构化存储 + 一键导出 JSON，后续可接入大模型做健康分析。
@@ -29,21 +30,23 @@ POST 过来，程序归一化后存入本地 SQLite，并用一个精致的深�
  Apple Watch / iPhone 健康 App
             │  HealthKit
             ▼
- iOS「快捷指令」（免费，定时运行）
-   Find Health Samples / Find Workouts
-            │  HTTP POST JSON（同一 Wi-Fi）
-            ▼
- ┌───────────────────────────────┐
- │  PulseBridge（Windows 桌面端） │
- │  ├─ 内置 HTTP 接收服务 :8765   │
- │  ├─ 归一化 + 去重 + SQLite     │
- │  └─ PySide6 仪表盘 / 托盘      │
- └───────────────────────────────┘
+ ┌──────────────────────────────┐
+ │ iPhone 端（二选一）           │
+ │ ① PulsHealth（免费，自动同步）│── POST /v1/batches (gzip NDJSON) ─┐
+ │ ② iOS 快捷指令（系统自带）    │── POST /api/ingest (JSON) ─────────┤
+ └──────────────────────────────┘                                   │
+                                                                     ▼
+ ┌─────────────────────────────────────────────────────────────────────┐
+ │  PulseBridge（Windows 桌面端）                                      │
+ │  ├─ 内置 HTTP 接收服务 :8765（Bearer/Token 鉴权）                    │
+ │  ├─ 归一化 + 按 UUID 去重 + SQLite                                   │
+ │  └─ PySide6 仪表盘 / 系统托盘                                       │
+ └─────────────────────────────────────────────────────────────────────┘
 ```
 
 > **为什么不能直连？** Apple HealthKit 没有公开的云端 API，任何 Windows 程序都无法
-> 直接读取 iPhone 的健康数据库。必须由手机侧 App 主动导出，快捷指令是目前唯一
-> 免费、原生、可定制的通道。
+> 直接读取 iPhone 的健康数据库。必须由手机侧 App 主动导出：推荐免费的
+> **PulsHealth**（自动同步、无需搭建），或使用系统自带的快捷指令（无需装 App）。
 
 ## 功能
 
@@ -52,6 +55,7 @@ POST 过来，程序归一化后存入本地 SQLite，并用一个精致的深�
 - **趋势**：9 种指标的 7 / 30 / 90 天趋势，自动区分「按日累计」与「按日平均」。
 - **运动记录**：跑步、骑行、力量训练等，含时长、距离、消耗、平均心率。
 - **同步与配对**：局域网地址、Token、二维码、最近同步日志、已接收指标统计。
+- **内置 PulsHealth 接收协议**：免费 App 自动后台同步 5 类数据，零快捷指令配置。
 - **系统托盘**：关闭窗口不退出，后台持续接收；可设置开机自启。
 - **AI 洞察（预留）**：数据摘要与 JSON 导出，后续接入大模型分析。
 
@@ -85,13 +89,56 @@ uv run pulsebridge
 2. 在 `0.0.0.0:8765` 启动接收服务（Windows 防火墙弹窗请允许**专用网络**）；
 3. 打开仪表盘。在「同步与配对」页可以看到局域网地址、Token 和二维码。
 
-接着在 iPhone 上配置快捷指令：见
-[docs/iphone-shortcuts.md](docs/iphone-shortcuts.md)，或在程序内点击
-**「打开 iPhone 配置指南」**（指南已自动填入你的地址与 Token）。
+## 推荐：PulsHealth 免费自动同步
+
+PulsHealth 是开源、免费的 iPhone App。免费版支持**自动后台同步最多 5 类数据**
+（最近 30 天），PulseBridge 已内置它的 Puls Sync Protocol v1 接收端点，**不需要搭建快捷指令**。
+
+1. App Store 免费安装 **PulsHealth**（iOS 17+）。
+2. 打开 **Sync → Database → Your Own Database**。
+3. **Database URL** 填程序显示的局域网地址，例如 `http://192.168.31.111:8765`
+   （只到端口，不要加 `/v1/batches`）；**Token** 填程序里的访问令牌。
+4. **Test Connection → Save & Apply**。
+5. 选择最多 5 类数据并允许健康权限，开启自动同步。
+
+推荐选择：心率、步数、睡眠、活动能量、体能训练。
+
+- 局域网地址允许 HTTP，无需证书；数据直接从手机发到电脑，无云端中转。
+- iOS 决定后台调度时机，**不保证严格整点**；电脑休眠时会在唤醒后补传。
+- 免费版 30 天 / 5 类；Pro 可选，本方案不需要。
+
+详细步骤与排错：[docs/pulshealth.md](docs/pulshealth.md)。
+
+### 或者：使用系统快捷指令
+
+完全不想安装第三方 App 时，可以用 iOS 自带的快捷指令手工搭建：
+见 [docs/iphone-shortcuts.md](docs/iphone-shortcuts.md)，或在程序内点击
+**「快捷指令配置指南」**（指南会自动填入你的地址与 Token）。
 
 > 手机与电脑必须在同一个 Wi-Fi。iOS 自动化没有「每小时」触发器，
 > 推荐「连接家庭 Wi-Fi / 开始充电 / 若干定点时间」组合触发；每次同步最近 2 天数据，
 > 服务端按 UUID 去重，因此漏掉某次触发也不会丢数据。
+
+### 手机打不开？
+
+1. **地址选对**：程序默认选择默认路由 / Wi-Fi 网卡地址。若电脑装了 VMware、
+   VirtualBox、Hyper-V，可能出现 `192.168.x.1` 这类虚拟网卡地址，手机无法访问；
+   请在「同步与配对 → 网络地址」切换到 Wi-Fi 网卡对应的地址（有默认网关的那个）。
+2. **放行防火墙**：Windows 常把 Wi-Fi 识别为「公用网络」，默认拦截入站连接，
+   而且不会弹提示。点击同步页的 **「修复防火墙」** 并同意 UAC；或管理员终端执行：
+
+   ```powershell
+   netsh advfirewall firewall add rule name="PulseBridge Health Receiver" `
+     dir=in action=allow protocol=TCP localport=8765 profile=any remoteip=localsubnet
+   ```
+
+3. 确认手机与电脑在同一网段、路由器未开启 AP 隔离、电脑未休眠。
+4. **Safari 报「无法与服务器建立安全的连接」**：iOS 18.2+ 的 Safari 会把 `http://`
+   自动升级为 `https://`，而 PulseBridge 是 HTTP 服务。请到
+   **设置 → App → Safari 浏览器 → 隐私与安全性** 关闭「不安全连接警告」后重试；
+   或跳过 Safari 验证，直接用快捷指令以 `http://` 地址同步（快捷指令不受此升级影响）。
+
+> 防火墙规则只允许**同一局域网**访问该端口，不会把服务暴露到公网。
 
 ## 常用命令
 
@@ -128,8 +175,9 @@ uv run pyinstaller --noconfirm --windowed --name PulseBridge \
 ```
 src/pulsebridge/
 ├── app.py            # QApplication 入口
-├── server.py         # 内置 HTTP 服务 + 鉴权 + 状态页
-├── ingest.py         # JSON 归一化（支持原生格式 / Health Auto Export 风格）
+├── server.py         # 内置 HTTP 服务 + 鉴权 + 状态页 + PulsHealth 端点
+├── ingest.py         # 快捷指令 JSON 归一化（原生格式 / Health Auto Export 风格）
+├── puls.py           # PulsHealth Puls Sync Protocol v1 接收与转换
 ├── db.py             # SQLite 存储与查询
 ├── analytics.py      # 日汇总、睡眠夜间聚合、心率序列
 ├── config.py         # 配置与 Token

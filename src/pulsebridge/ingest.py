@@ -19,12 +19,24 @@
     }
 
 2. Health Auto Export 风格的 ``metrics`` / ``workouts``（尽力兼容，便于手动导出）。
+3. 极简单条样本（方便在快捷指令里先跑通）::
+
+    {
+      "device": "iPhone",
+      "type": "heart_rate",
+      "start": "2026-11-12T23:20:00+08:00",
+      "end": "2026-11-12T23:20:00+08:00",
+      "value": 72,
+      "unit": "count/min",
+      "source": "Apple Watch"
+    }
 """
 
 from __future__ import annotations
 
 import hashlib
 import re
+import time
 from dataclasses import dataclass, field
 from typing import Any, Iterable
 
@@ -319,6 +331,28 @@ def normalize_payload(payload: dict[str, Any]) -> NormalizedPayload:
     result = NormalizedPayload(device=device, sent_at=sent_at)
 
     sample_items = _extract_sample_items(payload)
+    flat_sample = False
+    if not sample_items and not any(
+        key in payload for key in ("samples", "health_samples", "metrics")
+    ):
+        # 极简格式：整个请求体就是一条样本，或放在 "sample" 下。
+        # start/end 可以省略，默认使用接收时间，方便在快捷指令里快速测试。
+        single = payload.get("sample")
+        if isinstance(single, dict):
+            sample_items = [dict(single)]
+            flat_sample = True
+        elif (
+            _first(payload, ("type", "name", "metric", "identifier"))
+            and _first(payload, ("value", "qty", "quantity", "amount")) is not None
+        ):
+            sample_items = [dict(payload)]
+            flat_sample = True
+    if flat_sample and sample_items:
+        item = sample_items[0]
+        if _first(item, ("start", "start_ts", "startDate", "start_date", "date")) is None:
+            item["start"] = int(sent_at or time.time())
+        if _first(item, ("end", "end_ts", "endDate", "end_date", "end_time")) is None:
+            item["end"] = item["start"]
     if len(sample_items) > MAX_SAMPLES:
         result.warnings.append(f"样本数量超过 {MAX_SAMPLES}，已截断")
         sample_items = sample_items[:MAX_SAMPLES]

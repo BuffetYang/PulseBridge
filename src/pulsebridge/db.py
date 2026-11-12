@@ -344,6 +344,22 @@ class Database:
     # ------------------------------------------------------------------
     # 维护
     # ------------------------------------------------------------------
+    def delete_by_uuids(self, uuids: Iterable[str]) -> int:
+        """按 UUID 删除样本/运动（PulsHealth 删除行使用）。"""
+        values = {str(u).lower() for u in uuids}
+        if not values:
+            return 0
+        deleted = 0
+        with self._lock, self._conn:
+            for uuid in values:
+                deleted += self._conn.execute(
+                    "DELETE FROM samples WHERE uuid = ?", (uuid,)
+                ).rowcount
+                deleted += self._conn.execute(
+                    "DELETE FROM workouts WHERE uuid = ?", (uuid,)
+                ).rowcount
+        return deleted
+
     def purge_older_than(self, days: int) -> int:
         if days <= 0:
             return 0

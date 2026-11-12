@@ -14,9 +14,13 @@ uv run python -m pulsebridge --minimized --port 9000
 
 ## 架构要点
 
-- `server.py`：`ThreadingHTTPServer` 监听 `0.0.0.0:8765`，Token 鉴权（`X-PulseBridge-Token` 或 `?token=`）；
-  路由 `/`、`/api/ping`、`/api/status`、`/api/ingest`、`/api/export`。服务在后台线程运行，
+- `server.py`：`ThreadingHTTPServer` 监听 `0.0.0.0:8765`，Token 鉴权（`Authorization: Bearer`、
+  `X-PulseBridge-Token` 或 `?token=`）；快捷指令路由 `/api/ingest`，PulsHealth 路由
+  `POST /v1/batches`、`GET /v1/capabilities`、`GET /healthz`。服务在后台线程运行，
   通过 `bus.IngestBus.ingested` 信号通知 UI。
+- `puls.py`：PulsHealth Puls Sync Protocol v1 接收端；gzip NDJSON，按 header 行数解析，
+  转换 quantity/category(睡眠)/workout，UUID 幂等；路线/序列/聚合/活动圆环/Profile 行忽略。
+  可用官方 fixtures 验证：`docs/protocol/fixtures/`（PulsHealth 仓库）。
 - `ingest.py`：把快捷指令 JSON 归一化为样本/运动。没有 UUID 时用内容指纹生成稳定 UUID；
   运动去重指纹不包含来源（同一场训练可能来自 iPhone 与 Watch）。
 - `db.py`：WAL SQLite，单连接 + `RLock`；`samples.uuid` 唯一索引实现幂等去重。
@@ -27,9 +31,11 @@ uv run python -m pulsebridge --minimized --port 9000
 
 ## 约束与背景
 
-- HealthKit 无公开云端 API，Windows 无法直接读取；只能用 iPhone 快捷指令（免费）导出。
+- HealthKit 无公开云端 API，Windows 无法直接读取；免费方案：PulsHealth App（自动同步，推荐）
+  或 iPhone 快捷指令（系统自带，需手工配置）。
+- PulsHealth 免费版：自动同步最多 5 类、最近 30 天；局域网 HTTP 可用；后台调度由 iOS 决定。
 - iOS 自动化没有「每小时」触发器，只能 24 条定点自动化或 Wi-Fi/充电触发；
-  客户端每次拉最近 1 天，服务端去重，因此缺失触发不会丢数据。
+  快捷指令每次拉最近 2 天，服务端去重，因此缺失触发不会丢数据。
 - 不要将端口暴露到公网；Token 是唯一写入鉴权。
 - 中文文案与格式化统一走 `util.py` 的辅助函数。
 

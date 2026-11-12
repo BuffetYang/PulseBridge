@@ -14,11 +14,80 @@ POST 到 Windows 电脑。全程免费，不需要第三方 App、不需要 Appl
 1. iPhone 与 Windows 电脑连接**同一个 Wi-Fi**（不要使用访客网络）。
 2. 电脑上启动 PulseBridge，允许 Windows 防火墙的**专用网络**访问。
 3. 用 iPhone Safari 打开 `http://<电脑IP>:8765`，看到「接收服务运行中」即连通。
+   - 程序默认会选择默认路由 / Wi-Fi 网卡的地址。如果电脑装了 VMware、VirtualBox、
+     Hyper-V，地址列表里可能出现 `192.168.x.1` 这样的虚拟网卡地址，手机无法访问；
+     请在程序「同步与配对 → 网络地址」中切换到 Wi-Fi 地址。
 4. 如果打不开：
+   - **先点「同步与配对」页的「修复防火墙」**。Windows 10/11 常把 Wi-Fi 识别为
+     「公用网络」，公用网络默认拦截入站连接，而且不会弹任何提示。点按钮后同意 UAC
+     即可添加一条仅允许本地子网访问 TCP 8765 的入站规则；也可以管理员终端执行：
+     ```powershell
+     netsh advfirewall firewall add rule name="PulseBridge Health Receiver" `
+       dir=in action=allow protocol=TCP localport=8765 profile=any remoteip=localsubnet
+     ```
    - 检查是否同一网段（IP 前三段相同）；
    - 路由器是否开启了「AP 隔离 / 访客隔离」；
    - 电脑是否休眠（休眠时收不到，唤醒后下次同步会补齐）；
-   - 在「设置 → 防火墙和网络保护 → 允许应用通过防火墙」中勾选 PulseBridge / Python。
+   - 确认使用的是 Wi-Fi 网卡地址，而不是 VMware / VirtualBox 虚拟网卡地址。
+
+> **Safari 提示「无法与服务器建立安全的连接」？**
+> 这是 iOS 18.2+ Safari 的 HTTPS-First 功能把 `http://` 自动升级成了 `https://`，
+> 而 PulseBridge 是 HTTP 服务（没有 TLS 证书），所以握手失败。
+> - 临时关闭：**设置 → App → Safari 浏览器 → 隐私与安全性 → 关闭「不安全连接警告」**
+>   （英文为 *Not Secure Connection Warning*），然后从多任务界面彻底关闭 Safari 再重试。
+> - 确认 **设置 → 隐私与安全性 → 本地网络 → Safari 浏览器** 已开启。
+> - 也可以**跳过 Safari 验证**：直接在快捷指令里使用 `http://` 地址运行一次，
+>   快捷指令的「获取 URL 内容」不受 Safari 的 HTTPS 升级影响。只要电脑端
+>   「最近同步」出现记录，就说明链路正常。
+> - 不需要为了日常同步关闭该设置；它只影响 Safari 手动验证。验证完可以重新打开。
+
+## 0.5 不依赖 Safari 的连通性测试（推荐）
+
+如果找不到 Safari 设置，直接跳过 Safari，用快捷指令验证：
+
+1. 电脑端保持 PulseBridge 运行。
+2. iPhone 打开「快捷指令」→ 新建，命名「PulseBridge 测试」。
+3. 搜索并添加「**获取 URL 内容**」（Get Contents of URL）：
+   - URL：`http://192.168.31.111:8765/api/ping`
+   - 方法：GET（默认）
+4. 再添加「**快速查看**」或「**显示结果**」，输入选上一步的「内容」。
+5. 运行。首次会请求「本地网络」和「连接到 192.168.x.x」权限，全部允许。
+6. 看到类似 `{"ok": true, "app": "PulseBridge"}` 就说明链路正常。
+
+这一步不需要健康权限、不需要 Token，也不经过 Safari。测试通过后再按下面的步骤
+创建正式的同步快捷指令。
+
+> 如果这里也报「安全连接」错误，说明 iOS 27 的 Shortcuts 同样限制了明文 HTTP。
+> 这种情况需要给 PulseBridge 增加 HTTPS（自签名本地证书）或改用其他传输方式；
+> 把完整报错发我，我再按你的系统版本处理。
+
+## 0.6 极简 POST 测试（验证 Token 与入库）
+
+连通性没问题后，用一条硬编码样本验证 POST、Token 和数据库。
+**不需要添加日期动作**：极简格式里 `start` / `end` 可以省略，服务端会用接收时间。
+
+1. 添加「**获取 URL 内容**」：
+   - URL：`http://192.168.31.111:8765/api/ingest`
+   - 方法：**POST**
+   - 请求头：`X-PulseBridge-Token` = 程序里复制的 Token
+   - 请求体：**JSON**，添加字段：
+
+     | 字段 | 类型 | 值 |
+     | --- | --- | --- |
+     | `device` | 文本 | `iPhone` |
+     | `type` | 文本 | `heart_rate` |
+     | `value` | 数字 | `72` |
+     | `unit` | 文本 | `count/min` |
+     | `source` | 文本 | `快捷指令测试` |
+
+2. 运行。电脑端「最近同步」出现「+1 样本」，仪表盘出现当前时间的心率点，
+   说明 POST、Token、入库全部正常。
+
+这是单条样本的极简格式，适合先跑通；正式同步时再按第 2 步用循环批量发送，
+起止时间来自健康样本本身。
+
+> 「无法在获取 URL 内容上方加动作」也没关系：iOS 27 的添加按钮默认把新动作
+> 追加到末尾，需要拖动才能调整顺序；本测试不需要日期动作，因此不用调整。
 
 ---
 
@@ -193,7 +262,8 @@ curl.exe -X POST "http://192.168.1.100:8765/api/ingest" `
 | 现象 | 原因 / 解决 |
 | --- | --- |
 | 401 `token 无效` | 快捷指令中的 Token 与「同步与配对」页不一致；重新生成 Token 后必须同时更新快捷指令 |
-| 无法连接 | 不在同一 Wi-Fi、电脑休眠、防火墙拦截、路由器 AP 隔离、IP 已变化（看程序内最新地址） |
+| 无法连接 | 不在同一 Wi-Fi、电脑休眠、防火墙拦截（点击「修复防火墙」）、路由器 AP 隔离、IP 已变化或选到了 VMware/VirtualBox 虚拟网卡地址 |
+| Safari 提示「无法建立安全连接」 | iOS 18.2+ Safari 把 http 升级成了 https；关闭 Safari「隐私与安全性 → 不安全连接警告」，或跳过 Safari 直接用快捷指令测试 |
 | 运行成功但没数据 | 健康权限未开；筛选时间范围不对；「查找健康样本」限制太小 |
 | 步数偏少 | 多来源时程序按「单来源合计的最大值」统计，避免 iPhone + Watch 重复计数；确认 Apple Watch 已同步到健康 App |
 | 睡眠没有深睡/REM | 需要 Apple Watch 开启「睡眠跟踪」；iPhone 单独记录通常只有「在床上 / 睡眠」 |
