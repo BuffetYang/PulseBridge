@@ -141,3 +141,32 @@ def test_heart_rate_points_buckets_by_minute(tmp_path) -> None:
     assert len(points) == 1
     assert points[0][1] == 75.0
     db.close()
+
+
+def test_legacy_activity_type_is_normalized_on_open(tmp_path) -> None:
+    path = tmp_path / "test.db"
+    db = Database(path)
+    now = int(time.time())
+    db.insert_workouts(
+        [
+            {
+                "uuid": "legacy-workout",
+                "activity_type": "activity4",
+                "start_ts": now,
+                "end_ts": now + 1800,
+                "duration_s": 1800,
+                "distance_m": None,
+                "energy_kcal": None,
+                "avg_hr": None,
+                "max_hr": None,
+                "source": "Apple Watch",
+                "metadata": None,
+            }
+        ]
+    )
+    db.close()
+
+    reopened = Database(path)
+    rows = reopened.workout_rows(0)
+    assert rows and rows[0]["activity_type"] == "badminton"
+    reopened.close()

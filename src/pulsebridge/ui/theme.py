@@ -70,6 +70,10 @@ QFrame#card {
     border: 1px solid #1F2B39;
     border-radius: 18px;
 }
+QFrame#card[clickable="true"]:hover {
+    background: #141E29;
+    border-color: #2E6A4C;
+}
 QFrame#row {
     background: #0F1620;
     border: 1px solid #1A2635;

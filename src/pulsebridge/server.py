@@ -437,6 +437,15 @@ class IngestServer(ThreadingHTTPServer):
     # 关闭它，端口被占用时直接报错。
     allow_reuse_address = sys.platform != "win32"
 
+    def handle_error(self, request, client_address) -> None:
+        """客户端中途断开（iOS 熄屏/切后台/网络切换）是正常现象，不打印 traceback。"""
+        exc = sys.exc_info()[1]
+        if isinstance(
+            exc, (ConnectionResetError, ConnectionAbortedError, BrokenPipeError, TimeoutError)
+        ):
+            return
+        super().handle_error(request, client_address)
+
     def __init__(
         self,
         address: tuple[str, int],

@@ -41,6 +41,14 @@ def card_header(title: str, subtitle: str | None = None, right: QWidget | None =
     return row
 
 
+def _mark_clickable(widget: QWidget) -> None:
+    widget.setCursor(Qt.CursorShape.PointingHandCursor)
+    widget.setProperty("clickable", True)
+    widget.style().unpolish(widget)
+    widget.style().polish(widget)
+    widget.update()
+
+
 class Card(QFrame):
     def __init__(self, parent: QWidget | None = None, margins: tuple[int, int, int, int] = (20, 18, 20, 18)) -> None:
         super().__init__(parent)
@@ -48,6 +56,24 @@ class Card(QFrame):
         self.body = QVBoxLayout(self)
         self.body.setContentsMargins(*margins)
         self.body.setSpacing(12)
+        self._on_click = None
+
+    def set_click_handler(self, callback, tooltip: str = "点击查看详情") -> None:
+        self._on_click = callback
+        if callback:
+            self.setToolTip(tooltip)
+            _mark_clickable(self)
+
+    def mouseReleaseEvent(self, event) -> None:  # noqa: N802
+        if (
+            self._on_click
+            and event.button() == Qt.MouseButton.LeftButton
+            and self.rect().contains(event.position().toPoint())
+        ):
+            self._on_click()
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
 
 
 class MetricCard(QFrame):
@@ -102,6 +128,24 @@ class MetricCard(QFrame):
         self.spark = Sparkline(color)
         layout.addWidget(self.spark)
         layout.addStretch(1)
+        self._on_click = None
+
+    def set_click_handler(self, callback, tooltip: str = "点击查看趋势") -> None:
+        self._on_click = callback
+        if callback:
+            self.setToolTip(tooltip)
+            _mark_clickable(self)
+
+    def mouseReleaseEvent(self, event) -> None:  # noqa: N802
+        if (
+            self._on_click
+            and event.button() == Qt.MouseButton.LeftButton
+            and self.rect().contains(event.position().toPoint())
+        ):
+            self._on_click()
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
 
     def set_value(
         self,
@@ -127,6 +171,23 @@ class MetricCard(QFrame):
 
 
 class StatusPill(QLabel):
+    clicked = Signal()
+
+    def set_click_handler(self, callback) -> None:
+        self.clicked.connect(callback)
+        self.setToolTip("查看同步状态")
+        _mark_clickable(self)
+
+    def mouseReleaseEvent(self, event) -> None:  # noqa: N802
+        if (
+            event.button() == Qt.MouseButton.LeftButton
+            and self.rect().contains(event.position().toPoint())
+        ):
+            self.clicked.emit()
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
     def set_state(self, state: str, text: str) -> None:
         name = {"good": "pillGood", "warn": "pillWarn", "bad": "pillBad"}.get(
             state, "pillWarn"

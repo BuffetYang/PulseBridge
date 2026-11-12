@@ -84,7 +84,12 @@ class MainWindow(QMainWindow):
         root_layout.addWidget(self.stack, 1)
 
         self.dashboard = DashboardPage(
-            db, controller, self._open_guide, lambda: self.navigate(2)
+            db,
+            controller,
+            self._open_guide,
+            lambda: self.navigate(2),
+            open_trend=self._open_trend,
+            open_sync=lambda: self.navigate(3),
         )
         self.trends = TrendsPage(db)
         self.workouts = WorkoutsPage(db)
@@ -237,6 +242,10 @@ class MainWindow(QMainWindow):
             refresh = getattr(page, "refresh", None)
             if callable(refresh):
                 refresh()
+
+    def _open_trend(self, metric: str) -> None:
+        self.trends.select_metric(metric)
+        self.navigate(1)
 
     def refresh_all(self) -> None:
         for page in self.pages:

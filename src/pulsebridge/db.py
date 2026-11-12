@@ -13,6 +13,8 @@ import time
 from pathlib import Path
 from typing import Any, Iterable
 
+from .util import normalize_workout_type
+
 SCHEMA_VERSION = 1
 
 _SCHEMA = """
@@ -81,6 +83,17 @@ class Database:
             self._conn.execute("PRAGMA foreign_keys=ON")
             self._conn.executescript(_SCHEMA)
             self._conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
+            # 把旧版本/第三方协议留下的原始运动类型（如 activity_4）转成可读类型
+            existing = self._conn.execute(
+                "SELECT DISTINCT activity_type FROM workouts"
+            ).fetchall()
+            for (current,) in existing:
+                normalized = normalize_workout_type(current)
+                if normalized and normalized != current:
+                    self._conn.execute(
+                        "UPDATE workouts SET activity_type = ? WHERE activity_type = ?",
+                        (normalized, current),
+                    )
             self._conn.commit()
 
     def close(self) -> None:

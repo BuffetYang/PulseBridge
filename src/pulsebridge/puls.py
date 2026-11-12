@@ -167,6 +167,8 @@ def _convert_sample(line: dict[str, Any]) -> tuple[str, dict[str, Any]] | None:
         if avg_hr is None and isinstance(flat, dict):
             avg_hr = flat.get("HKQuantityTypeIdentifierHeartRate")
         metadata = {"puls_kind": kind, "puls_type": type_id}
+        if workout.get("activityType"):
+            metadata["puls_activity"] = str(workout["activityType"])
         return (
             "workout",
             {

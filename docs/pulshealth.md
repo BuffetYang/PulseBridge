@@ -94,6 +94,23 @@ PulseBridge 按样本 UUID 幂等入库，重复批次不会重复计数。
 | 步数偏少 | PulseBridge 按「同一来源日合计」统计，避免 iPhone + Watch 重复；确认 Watch 数据已同步到健康 App |
 | 睡眠没有深睡/REM | PulsHealth 发送的是 HealthKit 睡眠分类；需 Apple Watch 开启睡眠跟踪 |
 
+### 手机熄屏后会停止同步吗？
+
+不会因为「锁屏」本身停止。PulsHealth 使用 HealthKit 后台投递，锁屏/切后台时仍可能收到
+新数据并尝试上传；但 iOS 对后台执行有调度和限流，实际会**延迟**，不是持续实时：
+
+- 开启「设置 → 通用 → 后台 App 刷新 → PulsHealth」；
+- 关闭低电量模式（低电量会明显限制后台任务）；
+- **不要**从多任务界面强制上滑关闭 PulsHealth，强制退出后系统不会再唤醒它；
+- 电脑休眠/关机时上传会失败，App 会保留游标，下次联网/唤醒后重试并补齐；
+- 如果几小时没有新数据，打开 PulsHealth 一次触发同步即可，历史数据不会丢。
+
+### 控制台出现 ConnectionResetError / WinError 10054
+
+这是 iPhone 在请求过程中主动断开连接（熄屏、切后台、Wi-Fi 切换、App 被系统挂起）导致的，
+**不影响已经收到的数据**，也不需要处理。新版 PulseBridge 已经把这类正常的客户端断开
+静默，不再打印 traceback。
+
 ## 7. 隐私
 
 - PulsHealth 从 HealthKit 只读，不写回；数据直接发到你的电脑。

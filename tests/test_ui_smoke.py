@@ -11,6 +11,8 @@ from pulsebridge.server import ServerController  # noqa: E402
 
 
 def test_main_window_builds(tmp_path) -> None:
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
     from PySide6.QtWidgets import QApplication
 
     from pulsebridge.ui.main_window import MainWindow
@@ -31,6 +33,22 @@ def test_main_window_builds(tmp_path) -> None:
     for index in range(6):
         window.navigate(index)
         app.processEvents()
+
+    # 仪表盘指标卡点击 -> 趋势页对应指标
+    window.navigate(0)
+    app.processEvents()
+    QTest.mouseClick(window.dashboard.card_steps, Qt.MouseButton.LeftButton)
+    app.processEvents()
+    assert window.stack.currentIndex() == 1
+    assert window.trends.metric_combo.currentData() == "steps"
+
+    # 图表区域点击也可以跳转
+    window.navigate(0)
+    app.processEvents()
+    QTest.mouseClick(window.dashboard.hr_chart, Qt.MouseButton.LeftButton)
+    app.processEvents()
+    assert window.stack.currentIndex() == 1
+    assert window.trends.metric_combo.currentData() == "heart_rate"
 
     window._quitting = True
     window.close()

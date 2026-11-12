@@ -8,7 +8,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
-from PySide6.QtCore import QDateTime, QSize, Qt, QTimer, QUrl
+from PySide6.QtCore import QDateTime, QEvent, QSize, Qt, QTimer, QUrl
 from PySide6.QtGui import QDesktopServices, QIntValidator, QPixmap
 from PySide6.QtWidgets import (
     QButtonGroup,
@@ -161,6 +161,23 @@ class ChartCard(Card):
     def set_subtitle(self, text: str) -> None:
         self.subtitle.setText(text)
 
+    def set_click_handler(self, callback, tooltip: str = "点击查看趋势") -> None:
+        super().set_click_handler(callback, tooltip)
+        if callback:
+            self.chart.setCursor(Qt.CursorShape.PointingHandCursor)
+            self.chart.installEventFilter(self)
+
+    def eventFilter(self, watched, event) -> bool:  # noqa: N802
+        if (
+            watched is self.chart
+            and self._on_click
+            and event.type() == QEvent.Type.MouseButtonRelease
+            and event.button() == Qt.MouseButton.LeftButton
+        ):
+            self._on_click()
+            return True
+        return super().eventFilter(watched, event)
+
 
 class WorkoutRow(QFrame):
     def __init__(self, workout: dict[str, Any], parent: QWidget | None = None) -> None:
@@ -220,6 +237,24 @@ class WorkoutRow(QFrame):
         )
         detail_label.setMaximumWidth(300)
         layout.addWidget(detail_label)
+        self._on_click = None
+
+    def set_click_handler(self, callback, tooltip: str = "查看运动记录") -> None:
+        self._on_click = callback
+        if callback:
+            self.setToolTip(tooltip)
+            self.setCursor(Qt.CursorShape.PointingHandCursor)
+
+    def mouseReleaseEvent(self, event) -> None:  # noqa: N802
+        if (
+            self._on_click
+            and event.button() == Qt.MouseButton.LeftButton
+            and self.rect().contains(event.position().toPoint())
+        ):
+            self._on_click()
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
 
 
 def _date_of(ts: int) -> str:
@@ -237,6 +272,8 @@ class DashboardPage(QWidget):
         controller: ServerController,
         open_guide: Callable[[], None],
         open_workouts: Callable[[], None],
+        open_trend: Callable[[str], None] | None = None,
+        open_sync: Callable[[], None] | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -244,6 +281,8 @@ class DashboardPage(QWidget):
         self.controller = controller
         self.open_guide = open_guide
         self.open_workouts = open_workouts
+        self.open_trend = open_trend
+        self.open_sync = open_sync
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -251,6 +290,8 @@ class DashboardPage(QWidget):
 
         self.status = StatusPill()
         self.status.set_state("warn", "等待首次同步")
+        if self.open_sync:
+            self.status.set_click_handler(self.open_sync)
         today = datetime.now()
         subtitle = f"{today.year}年{today.month}月{today.day}日 · {weekday_label(today.strftime('%Y-%m-%d'))}"
         layout.addLayout(_header("仪表盘", subtitle, self.status))
@@ -263,6 +304,19 @@ class DashboardPage(QWidget):
         self.card_energy = MetricCard("🔥", "活动能量", COLORS["orange"], "kcal")
         for card in (self.card_steps, self.card_resting, self.card_sleep, self.card_energy):
             metrics.addWidget(card, 1)
+        if self.open_trend:
+            self.card_steps.set_click_handler(
+                lambda: self.open_trend("steps"), "查看步数趋势"
+            )
+            self.card_resting.set_click_handler(
+                lambda: self.open_trend("resting_heart_rate"), "查看静息心率趋势"
+            )
+            self.card_sleep.set_click_handler(
+                lambda: self.open_trend("sleep"), "查看睡眠趋势"
+            )
+            self.card_energy.set_click_handler(
+                lambda: self.open_trend("active_energy"), "查看活动能量趋势"
+            )
         layout.addLayout(metrics)
 
         charts = QHBoxLayout()
@@ -325,6 +379,17 @@ class DashboardPage(QWidget):
         bottom.addWidget(self.sleep_card, 1)
         layout.addLayout(bottom)
         layout.addStretch(1)
+
+        if self.open_trend:
+            self.hr_card.set_click_handler(
+                lambda: self.open_trend("heart_rate"), "查看心率趋势"
+            )
+            self.steps_card.set_click_handler(
+                lambda: self.open_trend("steps"), "查看步数趋势"
+            )
+            self.sleep_card.set_click_handler(
+                lambda: self.open_trend("sleep"), "查看睡眠趋势"
+            )
 
         self.refresh()
 
@@ -419,7 +484,10 @@ class DashboardPage(QWidget):
         workouts = analytics.recent_workouts(self.db, days=7, limit=3)
         if workouts:
             for workout in workouts:
-                self.workout_list.addWidget(WorkoutRow(workout))
+                row = WorkoutRow(workout)
+                if self.open_workouts:
+                    row.set_click_handler(self.open_workouts)
+                self.workout_list.addWidget(row)
         else:
             self.workout_list.addWidget(
                 EmptyState("🏃", "暂无运动记录", "Apple Watch 记录的训练会显示在这里")
@@ -564,6 +632,13 @@ class TrendsPage(QWidget):
     def _set_range(self, days: int) -> None:
         self.days = days
         self.refresh()
+
+    def select_metric(self, metric: str) -> None:
+        """供仪表盘卡片跳转：切到指定指标并刷新。"""
+        index = self.metric_combo.findData(metric)
+        if index >= 0:
+            self.metric_combo.setCurrentIndex(index)
+            self.refresh()
 
     def refresh(self) -> None:
         metric = self.metric_combo.currentData()

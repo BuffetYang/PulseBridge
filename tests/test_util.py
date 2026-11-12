@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from pulsebridge.util import parse_timestamp
+from pulsebridge.util import (
+    display_activity,
+    normalize_workout_type,
+    parse_timestamp,
+)
 
 
 def test_parse_iso_with_timezone() -> None:
@@ -20,3 +24,12 @@ def test_parse_localized_chinese_date() -> None:
 def test_parse_epoch_seconds_and_milliseconds() -> None:
     assert parse_timestamp(1794496768) == 1794496768
     assert parse_timestamp(1794496768000) == 1794496768
+
+
+def test_healthkit_workout_activity_numbers() -> None:
+    # PulsHealth sends activity_<rawValue> for types its name switch doesn't cover.
+    assert normalize_workout_type("activity_4") == "badminton"
+    assert normalize_workout_type("activity4") == "badminton"
+    assert normalize_workout_type("HKWorkoutActivityTypeBadminton") == "badminton"
+    assert display_activity("badminton") == "羽毛球"
+    assert normalize_workout_type("activity_999") == "other"
