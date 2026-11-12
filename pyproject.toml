@@ -1,0 +1,17 @@
+[project]
+name = "pulsebridge"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "ypk", email = "1328291224@qq.com" }
+]
+requires-python = ">=3.12"
+dependencies = []
+
+[project.scripts]
+pulsebridge = "pulsebridge:main"
+
+[build-system]
+requires = ["uv_build>=0.13.7,<0.14.0"]
+build-backend = "uv_build"
