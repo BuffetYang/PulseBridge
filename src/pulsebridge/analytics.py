@@ -1,0 +1,251 @@
+"""健康数据聚合：日汇总、心率序列、睡眠夜间统计。"""
+
+from __future__ import annotations
+
+import time
+from datetime import date, timedelta
+from typing import Any
+
+from .db import Database
+from .util import start_of_local_day
+
+CUMULATIVE_TYPES = {
+    "steps",
+    "active_energy",
+    "basal_energy",
+    "exercise_minutes",
+    "stand_hours",
+    "flights_climbed",
+    "distance",
+    "dietary_energy",
+}
+
+AVERAGE_TYPES = {
+    "heart_rate",
+    "resting_heart_rate",
+    "hrv",
+    "oxygen_saturation",
+    "respiratory_rate",
+    "vo2max",
+    "body_mass",
+    "walking_heart_rate",
+    "wrist_temperature",
+}
+
+METRIC_META: dict[str, dict[str, Any]] = {
+    "steps": {"label": "步数", "unit": "步", "digits": 0, "cumulative": True},
+    "heart_rate": {"label": "心率", "unit": "bpm", "digits": 0, "cumulative": False},
+    "resting_heart_rate": {
+        "label": "静息心率",
+        "unit": "bpm",
+        "digits": 0,
+        "cumulative": False,
+    },
+    "hrv": {"label": "心率变异性", "unit": "ms", "digits": 0, "cumulative": False},
+    "active_energy": {"label": "活动能量", "unit": "kcal", "digits": 0, "cumulative": True},
+    "basal_energy": {"label": "静息能量", "unit": "kcal", "digits": 0, "cumulative": True},
+    "exercise_minutes": {
+        "label": "锻炼时间",
+        "unit": "分钟",
+        "digits": 0,
+        "cumulative": True,
+    },
+    "stand_hours": {"label": "站立时间", "unit": "小时", "digits": 0, "cumulative": True},
+    "oxygen_saturation": {"label": "血氧", "unit": "%", "digits": 1, "cumulative": False},
+    "respiratory_rate": {
+        "label": "呼吸频率",
+        "unit": "次/分",
+        "digits": 1,
+        "cumulative": False,
+    },
+    "vo2max": {"label": "最大摄氧量", "unit": "ml/kg/min", "digits": 1, "cumulative": False},
+    "body_mass": {"label": "体重", "unit": "kg", "digits": 1, "cumulative": False},
+    "sleep": {"label": "睡眠", "unit": "小时", "digits": 1, "cumulative": False},
+    "distance": {"label": "步行+跑步距离", "unit": "km", "digits": 2, "cumulative": True},
+    "flights_climbed": {"label": "爬楼层数", "unit": "层", "digits": 0, "cumulative": True},
+}
+
+
+def date_range(days: int) -> list[str]:
+    today = date.today()
+    return [(today - timedelta(days=i)).isoformat() for i in range(days - 1, -1, -1)]
+
+
+def daily_series(db: Database, metric: str, days: int) -> list[dict[str, Any]]:
+    """返回连续 ``days`` 天的 ``{date, value}``，缺失日期 value 为 None。"""
+    days = max(1, int(days))
+    dates = date_range(days)
+    start = start_of_local_day(offset_days=-(days - 1))
+
+    values: dict[str, float | None]
+    if metric == "sleep":
+        nights = {n["date"]: n["asleep_min"] / 60.0 for n in sleep_nights(db, days)}
+        values = {day: nights.get(day) for day in dates}
+    elif metric in CUMULATIVE_TYPES:
+        rows = db.daily_cumulative(metric, start)
+        found = {str(row["day"]): float(row["value"]) for row in rows}
+        values = {day: found.get(day) for day in dates}
+    else:
+        rows = db.daily_stats(metric, start)
+        found = {str(row["day"]): float(row["avg"]) for row in rows}
+        values = {day: found.get(day) for day in dates}
+
+    return [{"date": day, "value": values.get(day)} for day in dates]
+
+
+def series_stats(points: list[dict[str, Any]], cumulative: bool) -> dict[str, Any]:
+    values = [p["value"] for p in points if p.get("value") is not None]
+    if not values:
+        return {"avg": None, "min": None, "max": None, "total": None, "count": 0}
+    return {
+        "avg": sum(values) / len(values),
+        "min": min(values),
+        "max": max(values),
+        "total": sum(values) if cumulative else None,
+        "count": len(values),
+    }
+
+
+def today_cumulative(db: Database, metric: str) -> float:
+    rows = db.daily_cumulative(metric, start_of_local_day())
+    if not rows:
+        return 0.0
+    return float(rows[-1]["value"] or 0.0)
+
+
+def today_sum(db: Database, metric: str) -> float:
+    row = db.latest_sample(metric, since_ts=start_of_local_day())
+    return float(row["value"]) if row and row.get("value") is not None else 0.0
+
+
+def latest_sample(
+    db: Database, metric: str, within_hours: int | None = None
+) -> dict[str, Any] | None:
+    since = int(time.time()) - within_hours * 3600 if within_hours else None
+    return db.latest_sample(metric, since_ts=since)
+
+
+def heart_rate_points(db: Database, hours: int = 24) -> list[tuple[int, float]]:
+    since = int(time.time()) - hours * 3600
+    rows = db.samples_between("heart_rate", since)
+    # 同一分钟内多来源取平均，减少毛刺
+    buckets: dict[int, list[float]] = {}
+    for row in rows:
+        value = row.get("value")
+        if value is None:
+            continue
+        key = int(row["start_ts"]) // 60 * 60
+        buckets.setdefault(key, []).append(float(value))
+    return [(key, sum(vals) / len(vals)) for key, vals in sorted(buckets.items())]
+
+
+def _stage_minutes(row: dict[str, Any]) -> float:
+    start = int(row["start_ts"])
+    end = int(row["end_ts"])
+    return max(0.0, (end - start) / 60.0)
+
+
+def sleep_nights(db: Database, days: int = 14) -> list[dict[str, Any]]:
+    """按「醒来日」汇总睡眠。
+
+    HealthKit 中同一晚可能有 iPhone / Watch 两份记录；这里按来源分别汇总，
+    取睡眠时长最大的来源，避免叠加导致睡眠时间翻倍。
+    """
+    since = start_of_local_day(offset_days=-(days + 1))
+    rows = db.sleep_samples(since)
+    by_night_source: dict[tuple[str, str], dict[str, Any]] = {}
+
+    for row in rows:
+        day = _local_date(row["end_ts"])
+        source = row.get("source") or "unknown"
+        bucket = by_night_source.setdefault(
+            (day, source),
+            {
+                "date": day,
+                "source": source,
+                "core_min": 0.0,
+                "deep_min": 0.0,
+                "rem_min": 0.0,
+                "unspecified_min": 0.0,
+                "awake_min": 0.0,
+                "in_bed_min": 0.0,
+                "start_ts": int(row["start_ts"]),
+                "end_ts": int(row["end_ts"]),
+            },
+        )
+        minutes = _stage_minutes(row)
+        stage = row.get("value_text") or "asleep_unspecified"
+        if stage == "core":
+            bucket["core_min"] += minutes
+        elif stage == "deep":
+            bucket["deep_min"] += minutes
+        elif stage == "rem":
+            bucket["rem_min"] += minutes
+        elif stage == "awake":
+            bucket["awake_min"] += minutes
+        elif stage == "in_bed":
+            bucket["in_bed_min"] += minutes
+        else:
+            bucket["unspecified_min"] += minutes
+        bucket["start_ts"] = min(bucket["start_ts"], int(row["start_ts"]))
+        bucket["end_ts"] = max(bucket["end_ts"], int(row["end_ts"]))
+
+    by_night: dict[str, dict[str, Any]] = {}
+    for (day, _source), bucket in by_night_source.items():
+        bucket["asleep_min"] = (
+            bucket["core_min"]
+            + bucket["deep_min"]
+            + bucket["rem_min"]
+            + bucket["unspecified_min"]
+        )
+        bucket["in_bed_min"] = max(bucket["in_bed_min"], bucket["asleep_min"] + bucket["awake_min"])
+        bucket["efficiency"] = (
+            bucket["asleep_min"] / bucket["in_bed_min"] * 100 if bucket["in_bed_min"] else 0.0
+        )
+        existing = by_night.get(day)
+        if existing is None or bucket["asleep_min"] > existing["asleep_min"]:
+            by_night[day] = bucket
+
+    return [by_night[day] for day in sorted(by_night)]
+
+
+def last_night(db: Database) -> dict[str, Any] | None:
+    nights = sleep_nights(db, days=3)
+    if not nights:
+        return None
+    latest = nights[-1]
+    if latest["asleep_min"] <= 0 and latest["in_bed_min"] <= 0:
+        return None
+    return latest
+
+
+def sleep_minutes_today(db: Database) -> float:
+    """今天 0 点后结束的睡眠（用于“今天”统计的补充）。"""
+    rows = db.sleep_samples(start_of_local_day())
+    return sum(_stage_minutes(r) for r in rows if (r.get("value_text") or "") != "awake")
+
+
+def recent_workouts(db: Database, days: int = 30, limit: int = 100) -> list[dict[str, Any]]:
+    since = start_of_local_day(offset_days=-(days - 1))
+    rows = db.workout_rows(since, limit=limit)
+    for row in rows:
+        if not row.get("duration_s") and row.get("end_ts") and row.get("start_ts"):
+            row["duration_s"] = max(0, int(row["end_ts"]) - int(row["start_ts"]))
+        if row.get("metadata"):
+            try:
+                import json
+
+                row["metadata"] = json.loads(row["metadata"])
+            except (TypeError, ValueError):
+                row["metadata"] = None
+    return rows
+
+
+def today_workouts(db: Database) -> list[dict[str, Any]]:
+    return [w for w in recent_workouts(db, days=1, limit=20)]
+
+
+def _local_date(ts: int) -> str:
+    from datetime import datetime
+
+    return datetime.fromtimestamp(ts).strftime("%Y-%m-%d")
