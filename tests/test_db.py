@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from datetime import date
 
 from pulsebridge import analytics
 from pulsebridge.db import Database
@@ -187,6 +188,73 @@ def test_resting_heart_rate_falls_back_to_night_window(tmp_path) -> None:
     assert today["estimated"] is True
     assert today["value"] is not None
     assert 70.0 <= today["value"] <= 76.0
+    db.close()
+
+
+def test_hourly_step_totals_uses_max_source_per_hour(tmp_path) -> None:
+    db = Database(tmp_path / "test.db")
+    day_start = start_of_local_day()
+    db.insert_samples(
+        [
+            _sample("sw1", "steps", day_start + 8 * 3600 + 600, 100.0, "Apple Watch"),
+            _sample("si1", "steps", day_start + 8 * 3600 + 1200, 150.0, "iPhone"),
+            _sample("sw2", "steps", day_start + 9 * 3600 + 60, 30.0, "Apple Watch"),
+        ]
+    )
+    rows = db.hourly_step_totals(day_start)
+    assert [row["value"] for row in rows] == [150.0, 30.0]
+    assert analytics.estimated_stand_hours(db, day_start, threshold=50) == 1.0
+    db.close()
+
+
+def test_activity_rings_merge_live_samples_and_summary(tmp_path) -> None:
+    db = Database(tmp_path / "test.db")
+    day = date.today().isoformat()
+    day_start = start_of_local_day()
+    db.insert_samples(
+        [
+            _sample("ae1", "active_energy", day_start + 3600, 100.0, unit="kcal"),
+            _sample("st1", "steps", day_start + 8 * 3600 + 60, 120.0),
+        ]
+    )
+    db.insert_workouts(
+        [
+            {
+                "uuid": "w-ring",
+                "activity_type": "running",
+                "start_ts": day_start + 7 * 3600,
+                "end_ts": day_start + 7 * 3600 + 1800,
+                "duration_s": 1800,
+                "distance_m": None,
+                "energy_kcal": None,
+                "avg_hr": None,
+                "max_hr": None,
+                "source": "Apple Watch",
+                "metadata": None,
+            }
+        ]
+    )
+    db.upsert_activity_summaries(
+        [
+            {
+                "date": day,
+                "move_kcal": 9.0,
+                "move_goal_kcal": 500.0,
+                "exercise_min": 60.0,
+                "exercise_goal_min": 60.0,
+                "stand_hours": 0.0,
+                "stand_goal_hours": 6.0,
+            }
+        ]
+    )
+
+    rings = analytics.activity_rings(db)
+    assert rings["move"] == 100.0  # 实时样本高于导入摘要
+    assert rings["exercise"] == 60.0  # 摘要高于 30 分钟训练
+    assert rings["stand"] == 1.0  # 由步数估算
+    assert rings["move_goal"] == 500.0
+    assert rings["stand_goal"] == 6.0
+    assert rings["live"] is True
     db.close()
 
 

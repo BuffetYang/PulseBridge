@@ -7,8 +7,10 @@ import math
 import re
 import socket
 import time
+import uuid
 from datetime import datetime, timedelta
 from typing import Any, Iterable
+from urllib.parse import quote
 
 # ---------------------------------------------------------------------------
 # 时间
@@ -612,6 +614,21 @@ def primary_lan_ip() -> str:
 
 def app_base_url(port: int, ip: str | None = None) -> str:
     return f"http://{ip or primary_lan_ip()}:{port}"
+
+
+def puls_pairing_link(base_url: str, token: str) -> str:
+    """生成 PulsHealth 的 ``puls://pair`` 配对码。
+
+    格式来自 PulsHealth 的 ``PairingPayload``：
+    ``puls://pair?url=<percent-encoded>&token=<percent-encoded>&user=<uuid>``。
+    User ID 由 Token 稳定派生，重复扫码不会产生新的用户身份。
+    """
+    user_id = uuid.uuid5(uuid.NAMESPACE_URL, f"pulsebridge:{token}")
+    return (
+        f"puls://pair?url={quote(base_url, safe='')}"
+        f"&token={quote(token, safe='')}"
+        f"&user={user_id}"
+    )
 
 
 def sample_fingerprint(

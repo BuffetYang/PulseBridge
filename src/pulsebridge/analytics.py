@@ -446,6 +446,76 @@ def today_sum(db: Database, metric: str) -> float:
     return float(row["value"]) if row and row.get("value") is not None else 0.0
 
 
+STEP_HOUR_STAND_THRESHOLD = 50
+
+
+def estimated_stand_hours(
+    db: Database,
+    since_ts: int,
+    end_ts: int | None = None,
+    threshold: int = STEP_HOUR_STAND_THRESHOLD,
+) -> float:
+    """用「有步数的小时数」估算站立圆环（Apple 站立小时的近似值）。"""
+    rows = db.hourly_step_totals(since_ts, end_ts)
+    return float(sum(1 for row in rows if float(row["value"] or 0) >= threshold))
+
+
+def _cumulative_for_day(db: Database, metric: str, day: str, day_start: int) -> float:
+    for row in db.daily_cumulative(metric, day_start):
+        if str(row["day"]) == day:
+            return float(row["value"] or 0)
+    return 0.0
+
+
+def activity_rings(db: Database, day: str | None = None) -> dict[str, Any]:
+    """计算某天的活动圆环。
+
+    优先使用 PulsHealth/实时同步的样本（活动能量、锻炼时间/训练、站立小时），
+    再与当天的 ActivitySummary 取较大值；目标值沿用最近一次活动摘要。
+    这样导入之后圆环也会继续随实时数据增长，而不是停在导入时刻。
+    """
+    target = day or date.today().isoformat()
+    day_start = _day_start_ts(target) or start_of_local_day()
+    day_end = day_start + 86400
+
+    move = _cumulative_for_day(db, "active_energy", target, day_start)
+    exercise = _cumulative_for_day(db, "exercise_minutes", target, day_start)
+    stand = _cumulative_for_day(db, "stand_hours", target, day_start)
+    if stand <= 0:
+        stand = _cumulative_for_day(db, "stand_minutes", target, day_start) / 60.0
+    if exercise <= 0:
+        workouts = db.workout_rows(day_start, limit=1000)
+        seconds = sum(
+            float(row.get("duration_s") or 0)
+            for row in workouts
+            if day_start <= int(row["start_ts"]) < day_end
+        )
+        exercise = seconds / 60.0
+    if stand <= 0:
+        stand = estimated_stand_hours(db, day_start, day_end)
+
+    live = move > 0 or exercise > 0 or stand > 0
+
+    summary = db.latest_activity_summary()
+    summary_date = str(summary.get("date") or "") if summary else ""
+    if summary and summary_date == target:
+        move = max(move, float(summary.get("move_kcal") or 0))
+        exercise = max(exercise, float(summary.get("exercise_min") or 0))
+        stand = max(stand, float(summary.get("stand_hours") or 0))
+
+    goals = summary or {}
+    return {
+        "move": move,
+        "exercise": exercise,
+        "stand": stand,
+        "move_goal": float(goals.get("move_goal_kcal") or 0),
+        "exercise_goal": float(goals.get("exercise_goal_min") or 0),
+        "stand_goal": float(goals.get("stand_goal_hours") or 0),
+        "summary_date": summary_date,
+        "live": live,
+    }
+
+
 def latest_sample(
     db: Database, metric: str, within_hours: int | None = None
 ) -> dict[str, Any] | None:

@@ -64,6 +64,7 @@ from ..util import (
     local_time_label,
     local_ipv4_addresses,
     primary_lan_ip,
+    puls_pairing_link,
     weekday_label,
 )
 from .charts import (
@@ -347,6 +348,10 @@ class DashboardPage(QWidget):
         layout.addLayout(metrics)
 
         self.activity_card = Card()
+        self.activity_card.setToolTip(
+            "活动能量/锻炼来自实时同步样本，并与 Apple 活动摘要取较大值；"
+            "站立小时在缺少官方数据时由有步数的小时数估算"
+        )
         activity_header = QHBoxLayout()
         activity_title = QLabel("活动圆环")
         activity_title.setObjectName("cardTitle")
@@ -566,29 +571,19 @@ class DashboardPage(QWidget):
         self._refresh_activity_rings()
 
     def _refresh_activity_rings(self) -> None:
-        summary = self.db.latest_activity_summary()
+        rings = analytics.activity_rings(self.db)
         today = datetime.now().strftime("%Y-%m-%d")
-        if summary:
-            date_text = str(summary.get("date") or "")
+        summary_date = str(rings.get("summary_date") or "")
+        if summary_date and summary_date != today and not rings["live"]:
             self.activity_date_label.setText(
-                "今日活动" if date_text == today else f"最近活动 · {local_date_label(date_text)}"
+                f"最近活动 · {local_date_label(summary_date)}"
             )
-            move = float(summary.get("move_kcal") or 0)
-            exercise = float(summary.get("exercise_min") or 0)
-            stand = float(summary.get("stand_hours") or 0)
-            move_goal = float(summary.get("move_goal_kcal") or 0)
-            exercise_goal = float(summary.get("exercise_goal_min") or 0)
-            stand_goal = float(summary.get("stand_goal_hours") or 0)
         else:
             self.activity_date_label.setText("今日活动")
-            move = analytics.today_cumulative(self.db, "active_energy")
-            exercise = analytics.today_cumulative(self.db, "exercise_minutes")
-            stand = analytics.today_cumulative(self.db, "stand_minutes") / 60.0
-            move_goal = exercise_goal = stand_goal = 0
 
-        self.ring_move.set_data(move, move_goal or 500)
-        self.ring_exercise.set_data(exercise, exercise_goal or 30)
-        self.ring_stand.set_data(stand, stand_goal or 12)
+        self.ring_move.set_data(rings["move"], rings["move_goal"] or 500)
+        self.ring_exercise.set_data(rings["exercise"], rings["exercise_goal"] or 30)
+        self.ring_stand.set_data(rings["stand"], rings["stand_goal"] or 12)
 
     def _refresh_status(self, stats: dict[str, Any]) -> None:
         if not self.controller.running:
@@ -1498,6 +1493,8 @@ class SyncPage(QWidget):
         hint = QLabel(
             "iPhone 与电脑需连接同一个 Wi-Fi。如果手机打不开且电脑没有弹防火墙提示，"
             "点击「修复防火墙」并同意管理员授权；地址请选择 Wi-Fi 网卡对应的那一项。"
+            "电脑重启后 IP 可能变化：点「显示配对二维码」重新扫码，或改 Database URL 后点"
+            " Add Database，再 Unpair 旧数据库；也可以在路由器里给电脑做 DHCP 地址保留。"
         )
         hint.setWordWrap(True)
         hint.setObjectName("subtle")
@@ -1533,7 +1530,8 @@ class SyncPage(QWidget):
         )
         puls_desc = QLabel(
             "在 iPhone 上安装免费的 PulsHealth，把 Database URL 填成上方的局域网地址、"
-            "Token 填成上方的访问令牌，开启自动同步即可。免费版支持最近 30 天、最多 5 类数据。"
+            "Token 填成上方的访问令牌；也可以点下方「显示配对二维码」让 App 扫码自动填入。"
+            "免费版支持最近 30 天、最多 5 类数据。"
         )
         puls_desc.setWordWrap(True)
         puls_desc.setObjectName("subtle")
@@ -1552,6 +1550,12 @@ class SyncPage(QWidget):
         puls_guide_button.setCursor(Qt.CursorShape.PointingHandCursor)
         puls_guide_button.clicked.connect(self.open_puls_guide or self.open_guide)
         puls_buttons.addWidget(puls_guide_button)
+        pairing_button = QPushButton("显示配对二维码")
+        pairing_button.setObjectName("ghostButton")
+        pairing_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        pairing_button.setToolTip("用 PulsHealth 的 Scan Pairing Code 扫描，自动填入地址和 Token")
+        pairing_button.clicked.connect(self._show_pairing_code)
+        puls_buttons.addWidget(pairing_button)
         puls_buttons.addStretch(1)
         puls_card.body.addLayout(puls_buttons)
         left.addWidget(puls_card)
@@ -1694,7 +1698,7 @@ class SyncPage(QWidget):
         self._refresh_events()
         self._refresh_metrics()
 
-    def _set_qr(self, text: str) -> None:
+    def _qr_pixmap(self, text: str, size: int) -> QPixmap | None:
         try:
             import io
 
@@ -1704,16 +1708,67 @@ class SyncPage(QWidget):
             buffer = io.BytesIO()
             qr.save(buffer, kind="png", scale=8, border=2, dark="#0A0E14", light="#FFFFFF")
             pixmap = QPixmap()
-            pixmap.loadFromData(buffer.getvalue())
-            self.qr_label.setPixmap(
-                pixmap.scaled(
-                    QSize(178, 178),
-                    Qt.AspectRatioMode.KeepAspectRatio,
-                    Qt.TransformationMode.SmoothTransformation,
-                )
+            if not pixmap.loadFromData(buffer.getvalue()):
+                return None
+            return pixmap.scaled(
+                QSize(size, size),
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
             )
         except Exception:
+            return None
+
+    def _set_qr(self, text: str) -> None:
+        pixmap = self._qr_pixmap(text, 178)
+        if pixmap is None:
             self.qr_label.setText("无法生成二维码")
+        else:
+            self.qr_label.setPixmap(pixmap)
+
+    def _show_pairing_code(self) -> None:
+        base = self._base_url()
+        link = puls_pairing_link(base, self.config.token)
+        dialog = QDialog(self)
+        dialog.setWindowTitle("PulsHealth 配对二维码")
+        dialog.setMinimumWidth(430)
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(22, 20, 22, 18)
+        layout.setSpacing(12)
+
+        title = QLabel("用 PulsHealth 扫码配对")
+        title.setObjectName("cardTitle")
+        layout.addWidget(title)
+
+        desc = QLabel(
+            "PulsHealth → Sync → Database → Scan Pairing Code，扫描下面的二维码。\n"
+            "它会自动填入地址、Token 和 User ID，然后点 Add Database。\n"
+            "如果 Add Database 不成功，先在 Saved Databases 里对旧数据库点 Unpair，再扫一次。"
+        )
+        desc.setWordWrap(True)
+        desc.setObjectName("subtle")
+        layout.addWidget(desc)
+
+        qr_label = QLabel()
+        qr_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        pixmap = self._qr_pixmap(link, 220)
+        if pixmap is None:
+            qr_label.setText("无法生成二维码，请复制下方配对码")
+        else:
+            qr_label.setPixmap(pixmap)
+        layout.addWidget(qr_label)
+
+        layout.addWidget(
+            CopyRow("配对码（也可粘贴到 PulsHealth 的 Paste Pairing Code）", link)
+        )
+
+        close_button = QPushButton("关闭")
+        close_button.setObjectName("primaryButton")
+        close_button.clicked.connect(dialog.accept)
+        row = QHBoxLayout()
+        row.addStretch(1)
+        row.addWidget(close_button)
+        layout.addLayout(row)
+        dialog.exec()
 
     def _refresh_events(self) -> None:
         _clear_layout(self.events_list)

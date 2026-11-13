@@ -36,10 +36,35 @@ PulsHealth 是一款开源、免费的 iPhone App（App Store 免费下载），
    - **Token**：PulseBridge「访问令牌」里的值
 4. 点 **Test Connection**。成功后会显示服务器信息（PulseBridge 实现了
    `GET /v1/capabilities`）。
-5. 点 **Save & Apply**。
+5. 点 **Add Database**（首次）或 **Save & Apply**（修改已有连接）。
+
+> 也可以点 PulseBridge「同步与配对」页的 **显示配对二维码**，在 PulsHealth 的
+> **Scan Pairing Code** 里扫码；地址、Token 和 User ID 会自动填入。
 
 > 如果界面还要求 User ID，可留空；PulsHealth 会发送自己的用户 ID，
 > PulseBridge 单用户接收，不校验该字段。
+
+### 电脑 IP 变了怎么办
+
+PulsHealth 把「Database URL + User ID」当成一个数据库身份，所以直接改 URL 会**新增**
+一条数据库记录，而不是原地修改。推荐流程：
+
+1. **先**在 **Saved Databases** 里对旧数据库点 **Unpair**。
+   （旧数据库仍在活动同步时，新增数据库可能失败；PulsHealth 需要先停止旧连接。）
+2. PulseBridge「同步与配对」→ **显示配对二维码**；
+3. PulsHealth → Sync → Database → **Scan Pairing Code** 扫码，自动填入地址、Token、User ID；
+4. 点 **Add Database**，回到 Sync 页确认开始同步。
+
+Unpair 只删除手机端保存的地址、凭据和同步进度；已经上传到电脑的数据仍然保留。
+新数据库会从头回填最近 30 天；PulseBridge 按内容指纹去重，不会重复计数。
+
+> 如果添加时提示 **“A sync is running or waiting to start. Wait for it to finish,
+> then try again.”**，说明旧数据库的上传任务还卡着（旧 IP 已不可达时会一直重试）。
+> 直接对旧数据库点 **Unpair** 停止它，再扫码添加新库。必要时先强制退出 PulsHealth
+> 再重开，趁后台同步启动前完成 Unpair。
+
+不想每次重启都改，可以在路由器 DHCP 设置里给电脑绑定固定 IP（按 MAC 地址保留），
+或在 Windows 网络设置里配置静态 IP。PulseBridge 的「同步与配对」页始终显示当前地址。
 
 ## 3. 选择同步类型（免费版最多 5 类）
 

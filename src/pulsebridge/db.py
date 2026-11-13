@@ -479,6 +479,30 @@ class Database:
         )
         return [dict(r) for r in rows]
 
+    def hourly_step_totals(
+        self, since_ts: int, end_ts: int | None = None
+    ) -> list[dict]:
+        """按本地小时汇总步数；每个小时取各来源合计的最大值，避免双计。"""
+        sql = """
+            SELECT hour, MAX(total) AS value FROM (
+                SELECT strftime('%Y-%m-%d %H', start_ts, 'unixepoch', 'localtime') AS hour,
+                       ifnull(source, '') AS src,
+                       SUM(value) AS total
+                FROM samples
+                WHERE type = 'steps' AND start_ts >= ? AND value IS NOT NULL
+        """
+        params: list[Any] = [since_ts]
+        if end_ts is not None:
+            sql += " AND start_ts < ?"
+            params.append(end_ts)
+        sql += """
+                GROUP BY hour, src
+            )
+            GROUP BY hour
+            ORDER BY hour
+        """
+        return [dict(r) for r in self._rows(sql, tuple(params))]
+
     def daily_stats(self, type_: str, since_ts: int) -> list[dict]:
         rows = self._rows(
             """
