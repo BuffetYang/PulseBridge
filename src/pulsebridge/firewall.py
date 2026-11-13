@@ -9,14 +9,19 @@ from __future__ import annotations
 import sys
 
 RULE_NAME = "PulseBridge Health Receiver"
+MDNS_RULE_NAME = "PulseBridge mDNS"
 
 
 def firewall_rule_command(port: int) -> str:
-    # 同一个提权窗口内先删除旧规则再添加，重复执行是幂等的
+    # 同一个提权窗口内先删除旧规则再添加，重复执行是幂等的。
+    # TCP 用于接收数据；UDP 5353 用于 mDNS 固定地址。
     return (
         f'netsh advfirewall firewall delete rule name="{RULE_NAME}" >nul 2>&1 & '
         f'netsh advfirewall firewall add rule name="{RULE_NAME}" dir=in action=allow '
-        f"protocol=TCP localport={int(port)} profile=any remoteip=localsubnet"
+        f"protocol=TCP localport={int(port)} profile=any remoteip=localsubnet & "
+        f'netsh advfirewall firewall delete rule name="{MDNS_RULE_NAME}" >nul 2>&1 & '
+        f'netsh advfirewall firewall add rule name="{MDNS_RULE_NAME}" dir=in action=allow '
+        f"protocol=UDP localport=5353 profile=any remoteip=localsubnet"
     )
 
 

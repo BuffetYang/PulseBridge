@@ -1608,10 +1608,17 @@ class SyncPage(QWidget):
         service_card.body.addLayout(ip_row)
 
         self.url_row = CopyRow("局域网地址（在 iPhone 上打开可验证连接）")
+        self.mdns_row = CopyRow("固定地址（同一 Wi-Fi 下换 IP 也不用改）", "")
+        self.mdns_status = QLabel("")
+        self.mdns_status.setObjectName("subtle")
+        self.mdns_status.setWordWrap(True)
+        self._mdns_active = False
         self.endpoint_row = CopyRow("同步接口 URL")
         self.ping_row = CopyRow("连接测试 URL（GET，无需 Token）")
         self.token_row = CopyRow("访问令牌（Token）", secret=True)
         service_card.body.addWidget(self.url_row)
+        service_card.body.addWidget(self.mdns_row)
+        service_card.body.addWidget(self.mdns_status)
         service_card.body.addWidget(self.endpoint_row)
         service_card.body.addWidget(self.ping_row)
         service_card.body.addWidget(self.token_row)
@@ -1620,6 +1627,7 @@ class SyncPage(QWidget):
         hint = QLabel(
             "iPhone 与电脑需连接同一个 Wi-Fi。如果手机打不开且电脑没有弹防火墙提示，"
             "点击「修复防火墙」并同意管理员授权；地址请选择 Wi-Fi 网卡对应的那一项。"
+            "固定地址依赖 mDNS；部分公共 Wi-Fi 会屏蔽组播，此时请改用局域网地址或电脑热点。"
             "电脑重启后 IP 可能变化：点「显示配对二维码」重新扫码，或改 Database URL 后点"
             " Add Database，再 Unpair 旧数据库；也可以在路由器里给电脑做 DHCP 地址保留。"
         )
@@ -1656,16 +1664,16 @@ class SyncPage(QWidget):
             )
         )
         puls_desc = QLabel(
-            "在 iPhone 上安装免费的 PulsHealth，把 Database URL 填成上方的局域网地址、"
-            "Token 填成上方的访问令牌；也可以点下方「显示配对二维码」让 App 扫码自动填入。"
-            "免费版支持最近 30 天、最多 5 类数据。"
+            "在 iPhone 上安装免费的 PulsHealth，把 Database URL 填成上方的固定地址"
+            "（或局域网地址）、Token 填成上方的访问令牌；也可以点下方「显示配对二维码」"
+            "让 App 扫码自动填入。免费版支持最近 30 天、最多 5 类数据。"
         )
         puls_desc.setWordWrap(True)
         puls_desc.setObjectName("subtle")
         puls_card.body.addWidget(puls_desc)
         puls_steps = QLabel(
             "1. App Store 搜索并安装 PulsHealth\n"
-            "2. Sync → Database → Your Own Database：填入地址与 Token，Test Connection\n"
+            "2. Sync → Database → Your Own Database：填入固定地址与 Token，Test Connection\n"
             "3. 选择 5 类数据并允许健康权限，开启自动同步"
         )
         puls_steps.setWordWrap(True)
@@ -1769,7 +1777,7 @@ class SyncPage(QWidget):
             self,
             "修复 Windows 防火墙",
             f"Windows 将当前 Wi-Fi 识别为公用网络，默认会拦截手机的入站连接。\n\n"
-            f"接下来会请求管理员权限，为 TCP 端口 {port} 添加入站规则"
+            f"接下来会请求管理员权限，为 TCP 端口 {port} 和 mDNS UDP 5353 添加入站规则"
             f"（仅允许同一局域网访问）。出现 UAC 弹窗时请点击「是」。\n\n继续吗？",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.Yes,
@@ -1798,6 +1806,27 @@ class SyncPage(QWidget):
 
     def _base_url(self) -> str:
         return app_base_url(self.controller.port, self.selected_ip)
+
+    def _pairing_base_url(self) -> str:
+        if self._mdns_active and self.mdns_row.value().strip():
+            return self.mdns_row.value().strip()
+        return self._base_url()
+
+    def set_mdns(self, url: str, active: bool, message: str = "") -> None:
+        self.mdns_row.set_value(url)
+        self._mdns_active = bool(active)
+        if active:
+            self.mdns_status.setText(
+                "固定地址已启用：手机可以一直用这个地址，电脑换 Wi-Fi/IP 通常不用重配。"
+            )
+            self.mdns_status.setStyleSheet(f"color: {COLORS['accent']};")
+        else:
+            self.mdns_status.setText(
+                "固定地址未生效（"
+                + (message or "mDNS 未启动")
+                + "），请使用上方局域网地址。"
+            )
+            self.mdns_status.setStyleSheet(f"color: {COLORS['orange']};")
 
     def refresh(self) -> None:
         self._sync_ip_options()
@@ -1853,7 +1882,7 @@ class SyncPage(QWidget):
             self.qr_label.setPixmap(pixmap)
 
     def _show_pairing_code(self) -> None:
-        base = self._base_url()
+        base = self._pairing_base_url()
         link = puls_pairing_link(base, self.config.token)
         dialog = QDialog(self)
         dialog.setWindowTitle("PulsHealth 配对二维码")
@@ -1870,6 +1899,11 @@ class SyncPage(QWidget):
             "PulsHealth → Sync → Database → Scan Pairing Code，扫描下面的二维码。\n"
             "它会自动填入地址、Token 和 User ID，然后点 Add Database。\n"
             "如果 Add Database 不成功，先在 Saved Databases 里对旧数据库点 Unpair，再扫一次。"
+            + (
+                "\n当前是固定地址，电脑换 Wi-Fi 后通常不需要重扫。"
+                if self._mdns_active
+                else ""
+            )
         )
         desc.setWordWrap(True)
         desc.setObjectName("subtle")
@@ -2774,6 +2808,22 @@ class SettingsPage(QWidget):
         token_button.setCursor(Qt.CursorShape.PointingHandCursor)
         token_button.clicked.connect(self._regenerate_token)
         service.body.addWidget(token_button, 0, Qt.AlignmentFlag.AlignLeft)
+
+        self.mdns_toggle = ToggleSwitch()
+        service.body.addLayout(
+            _toggle_row(
+                "启用固定地址（mDNS，http://pulsebridge-xxxx.local）",
+                self.mdns_toggle,
+            )
+        )
+        mdns_hint = QLabel(
+            "同一 Wi-Fi 下电脑换 IP 也不用改手机上的地址；"
+            "部分公共/校园 Wi-Fi 会屏蔽组播，此时可关闭并使用局域网 IP。"
+        )
+        mdns_hint.setObjectName("subtle")
+        mdns_hint.setWordWrap(True)
+        service.body.addWidget(mdns_hint)
+        self.mdns_toggle.toggled.connect(self._on_mdns_changed)
         layout.addWidget(service)
 
         # 数据
@@ -2948,6 +2998,7 @@ class SettingsPage(QWidget):
         self.floating_toggle.setChecked(
             bool(self.config.get("floating_enabled"))
         )
+        self.mdns_toggle.setChecked(bool(self.config.get("mdns_enabled", True)))
         self._load_import_settings()
         self._loading = False
 
@@ -3141,6 +3192,12 @@ class SettingsPage(QWidget):
         self.config.set("floating_enabled", enabled)
         if self.on_floating_changed is not None:
             self.on_floating_changed(enabled)
+
+    def _on_mdns_changed(self, enabled: bool) -> None:
+        if self._loading:
+            return
+        self.config.set("mdns_enabled", enabled)
+        self.refresh_all()
 
     def _apply_port(self) -> None:
         text = self.port_edit.text().strip()

@@ -17,6 +17,8 @@ PulseBridge 让你的 iPhone / Apple Watch 健康与运动数据自动出现在 
 - **桌面悬浮球（可选）**：悬停查看今日步数、睡眠、静息心率和活动圆环；
   自带步数换算、连续达标、动态表情和随机小贴士，可拖动到任意位置。
 - **开箱即用**：单个桌面程序，内置接收服务、托盘常驻、开机自启、二维码配对。
+- **固定地址**：mDNS 广播 `http://pulsebridge-xxxx.local:8765`，同一 Wi-Fi 下电脑换 IP
+  通常不需要重新配对手机。
 - **为 AI 打底**：结构化存储 + 一键导出 JSON，后续可接入大模型做健康分析。
 
 <p align="center">
@@ -178,6 +180,8 @@ PulsHealth 免费版只有 5 类 / 30 天。需要其他指标或完整历史时
    ```powershell
    netsh advfirewall firewall add rule name="PulseBridge Health Receiver" `
      dir=in action=allow protocol=TCP localport=8765 profile=any remoteip=localsubnet
+   netsh advfirewall firewall add rule name="PulseBridge mDNS" `
+     dir=in action=allow protocol=UDP localport=5353 profile=any remoteip=localsubnet
    ```
 
 3. 确认手机与电脑在同一网段、路由器未开启 AP 隔离、电脑未休眠。
@@ -187,6 +191,20 @@ PulsHealth 免费版只有 5 类 / 30 天。需要其他指标或完整历史时
    或跳过 Safari 验证，直接用快捷指令以 `http://` 地址同步（快捷指令不受此升级影响）。
 
 > 防火墙规则只允许**同一局域网**访问该端口，不会把服务暴露到公网。
+
+### 换 Wi-Fi / 电脑 IP 变化
+
+PulseBridge 默认开启 mDNS，会在「同步与配对」页显示一个固定地址，例如：
+
+```
+http://pulsebridge-abe123.local:8765
+```
+
+PulsHealth 使用这个地址（或扫配对二维码）后，只要手机和电脑仍在同一个 Wi-Fi，
+电脑换 IP 通常不需要重新配对。需要允许 UDP 5353；部分公共/校园 Wi-Fi 会屏蔽组播，
+此时请改用局域网地址 + 扫码，或电脑热点 `http://192.168.137.1:8765`。
+高级用户也可以用 Tailscale Serve 走 HTTPS 跨网络，详见
+[docs/pulshealth.md](docs/pulshealth.md)。
 
 ## 常用命令
 
@@ -213,6 +231,7 @@ uv run python scripts/make_icon.py            # 生成 assets/pulsebridge.ico
 uv run pyinstaller --noconfirm --windowed --name PulseBridge \
   --icon assets/pulsebridge.ico \
   --collect-submodules PySide6 \
+  --collect-submodules zeroconf \
   scripts/run_app.py
 ```
 

@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 
 APP_NAME = "PulseBridge"
-APP_VERSION = "2.3.0"
+APP_VERSION = "2.4.0"
 DEFAULT_PORT = 8765
 
 DEFAULTS: dict[str, Any] = {
@@ -43,6 +43,7 @@ DEFAULTS: dict[str, Any] = {
     "floating_enabled": False,
     "floating_x": -1,
     "floating_y": -1,
+    "mdns_enabled": True,
 }
 
 

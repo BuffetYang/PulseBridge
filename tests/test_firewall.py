@@ -10,3 +10,6 @@ def test_firewall_rule_command() -> None:
     assert "action=allow" in command
     assert "remoteip=localsubnet" in command
     assert "PulseBridge Health Receiver" in command
+    assert "protocol=UDP" in command
+    assert "localport=5353" in command
+    assert "PulseBridge mDNS" in command

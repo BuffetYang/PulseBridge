@@ -1,6 +1,6 @@
 [project]
 name = "pulsebridge"
-version = "2.3.0"
+version = "2.4.0"
 description = "本地优先的 Apple 健康数据看板（Windows 桌面端）"
 readme = "README.md"
 license = "MIT"
@@ -11,6 +11,7 @@ requires-python = ">=3.12"
 dependencies = [
     "pyside6-essentials>=6.12.0",
     "segno>=1.6.6",
+    "zeroconf>=0.147.0",
 ]
 
 [project.scripts]

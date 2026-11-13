@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from datetime import datetime
 from typing import Any
 
@@ -25,9 +26,10 @@ from PySide6.QtWidgets import (
 from ..bus import IngestBus
 from ..config import APP_NAME, APP_VERSION, Config
 from ..db import Database
+from ..discovery import MdnsAdvertiser, stable_hostname, stable_url
 from ..reminders import due_occurrence
 from ..server import ServerController
-from ..util import humanize_ago, primary_lan_ip
+from ..util import humanize_ago, local_ipv4_addresses, primary_lan_ip
 from .floating import FloatingWidget
 from .icons import app_icon, brand_pixmap
 from .pages import (
@@ -155,6 +157,10 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(3000, self._check_import_reminder)
         if bool(config.get("floating_enabled")):
             QTimer.singleShot(0, lambda: self.floating.set_enabled(True))
+        self._mdns: MdnsAdvertiser | None = None
+        self._mdns_key: tuple | None = None
+        self._mdns_retry_at = 0.0
+        QTimer.singleShot(0, self._sync_mdns)
 
     # ------------------------------------------------------------------
     def _build_sidebar(self) -> QFrame:
@@ -262,6 +268,7 @@ class MainWindow(QMainWindow):
 
     def _quit(self) -> None:
         self._quitting = True
+        self._stop_mdns()
         self.floating.shutdown()
         self.tray.hide()
         QApplication.quit()
@@ -286,6 +293,7 @@ class MainWindow(QMainWindow):
             refresh = getattr(page, "refresh", None)
             if callable(refresh):
                 refresh()
+        self._sync_mdns()
         self._update_sidebar_status()
 
     def _tick(self) -> None:
@@ -295,6 +303,7 @@ class MainWindow(QMainWindow):
             if callable(refresh):
                 refresh()
         self._update_sidebar_status()
+        self._sync_mdns()
         self._check_import_reminder()
 
     def _check_import_reminder(self) -> None:
@@ -353,6 +362,46 @@ class MainWindow(QMainWindow):
             self.side_last.setText(
                 f"端口 {port} · {address} · 等待首次同步"
             )
+        if hasattr(self, "_mdns"):
+            self._sync_mdns()
+
+    def _sync_mdns(self) -> None:
+        if not hasattr(self, "sync") or not hasattr(self, "_mdns"):
+            return
+        url = stable_url(self.config, self.controller.port)
+        if not bool(self.config.get("mdns_enabled", True)):
+            self._stop_mdns()
+            self.sync.set_mdns(url, False, "已在设置中关闭")
+            return
+        if not self.controller.running:
+            self._stop_mdns()
+            self.sync.set_mdns(url, False, "接收服务未启动")
+            return
+        ip = str(self.config.get("lan_ip") or primary_lan_ip())
+        addresses = local_ipv4_addresses()
+        if addresses and ip not in addresses:
+            ip = primary_lan_ip()
+            self.config.set("lan_ip", ip)
+        key = (ip, self.controller.port, stable_hostname(self.config))
+        if self._mdns is None:
+            self._mdns = MdnsAdvertiser(
+                stable_hostname(self.config), self.controller.port
+            )
+        if key != self._mdns_key or not self._mdns.active:
+            now = time.time()
+            if not self._mdns.active and now < self._mdns_retry_at:
+                self.sync.set_mdns(url, False, self._mdns.error)
+                return
+            ok = self._mdns.start(ip)
+            self._mdns_key = key if ok else None
+            self._mdns_retry_at = 0.0 if ok else time.time() + 60
+        self.sync.set_mdns(url, self._mdns.active, self._mdns.error)
+
+    def _stop_mdns(self) -> None:
+        if self._mdns is not None:
+            self._mdns.stop()
+            self._mdns = None
+        self._mdns_key = None
 
     # ------------------------------------------------------------------
     def _open_guide(self) -> None:

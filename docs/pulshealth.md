@@ -66,6 +66,44 @@ Unpair 只删除手机端保存的地址、凭据和同步进度；已经上传�
 不想每次重启都改，可以在路由器 DHCP 设置里给电脑绑定固定 IP（按 MAC 地址保留），
 或在 Windows 网络设置里配置静态 IP。PulseBridge 的「同步与配对」页始终显示当前地址。
 
+### 固定地址：换 Wi-Fi 不用重配
+
+PulseBridge 默认开启 **mDNS 固定地址**，会广播一个由 Token 派生的名称，例如：
+
+```
+http://pulsebridge-abe123.local:8765
+```
+
+在 PulsHealth 里使用这个地址（或点「显示配对二维码」扫码）。电脑换 Wi-Fi、IP 变化后，
+**只要手机和电脑仍在同一个 Wi-Fi，通常不需要重新配对**，程序会自动把新 IP 广播出去。
+
+要求：
+
+- 手机与电脑连接同一个 Wi-Fi；
+- 路由器允许 mDNS / 组播（UDP 5353）；
+- Windows 防火墙放行 UDP 5353：在同步页点 **「修复防火墙」** 并同意 UAC。
+- 固定地址由 Token 派生；重新生成 Token 后地址会变，需要重新配对。
+
+如果换到新 Wi-Fi 后打不开：
+
+- 该网络可能屏蔽组播或开启**客户端隔离**（校园网、公共 Wi-Fi 常见）；
+- 改用「局域网地址」并扫码重配；
+- 或开电脑的**移动热点**，手机连热点，地址用 `http://192.168.137.1:8765`；
+- 或使用下面的 Tailscale 方案。
+
+#### 跨网络：Tailscale Serve（可选，高级）
+
+如果经常在不同网段、甚至蜂窝网络下使用，可以让手机通过 Tailscale 访问电脑：
+
+1. 在电脑和 iPhone 上安装 [Tailscale](https://tailscale.com/)，登录同一个 tailnet；
+2. 电脑执行：`tailscale serve --bg 8765`；
+3. PulsHealth 的 Database URL 填 `https://<电脑名>.<tailnet>.ts.net`
+   （HTTPS，不需要写端口）；
+4. Token 保持原来的值。
+
+数据通过 WireGuard 加密，不需要在路由器上做端口映射。这是可选方案，需要 Tailscale 账号；
+不需要时保持本机 mDNS 即可。
+
 ## 3. 选择同步类型（免费版最多 5 类）
 
 推荐这 5 类，正好覆盖看板：

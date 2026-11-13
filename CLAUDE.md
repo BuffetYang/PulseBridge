@@ -24,6 +24,8 @@ uv run python -m pulsebridge --minimized --port 9000
 - `health_export.py`：流式导入 Apple Health `export.zip` / `export.xml`（iterparse + 分批写入，
   支持取消/进度）；记录、运动与 ActivitySummary 一并导入，按内容指纹跨通道去重。
 - `reminders.py`：每周几/每月几号的导入提醒计算；`MainWindow._check_import_reminder` 通过托盘通知。
+- `discovery.py`：mDNS 固定地址（`pulsebridge-xxxx.local`），随局域网 IP 变化重新广播；
+  依赖 zeroconf，需放行 UDP 5353；部分公共 Wi-Fi 屏蔽组播时回退到 IP/热点/Tailscale。
 - `ai.py`：AI 健康周报。默认本地规则；用户可配置 OpenAI 兼容 API（GLM/DeepSeek 等）
   或本地 Ollama，不内置任何 Key；只发送 7/30 天聚合统计，周报存入 `ai_reports` 表。
 - `db.py` 的 `fingerprint` 唯一索引用于跨通道去重（PulsHealth UUID 与 Apple 导出无 UUID 的同一数据）；
@@ -52,6 +54,8 @@ uv run python -m pulsebridge --minimized --port 9000
 - AI 周报默认不联网；用户自填的模型 API Key 只存本机 `config.json`，不内置、不写日志；
   调用模型时只发送聚合统计，不发送原始样本。
 - 悬浮球默认关闭，开启后只读本地 SQLite；位置存 `floating_x/floating_y`，不联网。
+- mDNS 固定地址默认开启；名称由 Token 派生。换 Wi-Fi/IP 后自动重新广播，
+  但公共 Wi-Fi 可能屏蔽组播，需保留 IP/配对二维码/热点/Tailscale 回退说明。
 - 中文文案与格式化统一走 `util.py` 的辅助函数。
 
 ## 测试注意

@@ -22,6 +22,7 @@ def test_main_window_builds(tmp_path) -> None:
     apply_theme(app)
 
     config = Config(tmp_path / "config.json")
+    config.set("mdns_enabled", False)
     db = Database(tmp_path / "test.db")
     controller = ServerController(config, db)
     window = MainWindow(config, db, controller, IngestBus())
