@@ -281,6 +281,51 @@ def test_heart_rate_points_buckets_by_minute(tmp_path) -> None:
     db.close()
 
 
+def test_workout_history_filters_range_and_type(tmp_path) -> None:
+    db = Database(tmp_path / "test.db")
+    today = start_of_local_day() + 8 * 3600
+
+    def workout(uuid: str, activity: str, start_ts: int) -> dict:
+        return {
+            "uuid": uuid,
+            "activity_type": activity,
+            "start_ts": start_ts,
+            "end_ts": start_ts + 1800,
+            "duration_s": 1800,
+            "distance_m": None,
+            "energy_kcal": 200,
+            "avg_hr": None,
+            "max_hr": None,
+            "source": "Apple Watch",
+            "metadata": None,
+        }
+
+    db.insert_workouts(
+        [
+            workout("w1", "running", today),
+            workout("w2", "cycling", today - 10 * 86400),
+            workout("w3", "running", today - 400 * 86400),
+        ]
+    )
+
+    recent = analytics.workout_history(db, start_of_local_day(offset_days=-29))
+    assert {row["uuid"] for row in recent} == {"w1", "w2"}
+
+    all_running = analytics.workout_history(db, 0, activity_type="running")
+    assert {row["uuid"] for row in all_running} == {"w1", "w3"}
+
+    custom = analytics.workout_history(
+        db,
+        start_of_local_day(offset_days=-11),
+        start_of_local_day() + 86400,
+    )
+    assert {row["uuid"] for row in custom} == {"w1", "w2"}
+
+    counts = {row["activity_type"]: row["n"] for row in db.workout_type_counts()}
+    assert counts == {"running": 2, "cycling": 1}
+    db.close()
+
+
 def test_legacy_activity_type_is_normalized_on_open(tmp_path) -> None:
     path = tmp_path / "test.db"
     db = Database(path)

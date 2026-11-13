@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 
 APP_NAME = "PulseBridge"
-APP_VERSION = "2.1.2"
+APP_VERSION = "2.1.3"
 DEFAULT_PORT = 8765
 
 DEFAULTS: dict[str, Any] = {

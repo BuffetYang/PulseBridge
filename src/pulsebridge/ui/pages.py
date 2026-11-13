@@ -5,11 +5,12 @@ from __future__ import annotations
 import json
 import threading
 import urllib.request
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable
 
 from PySide6.QtCore import (
+    QDate,
     QDateTime,
     QEvent,
     QObject,
@@ -24,6 +25,7 @@ from PySide6.QtGui import QDesktopServices, QIntValidator, QPixmap
 from PySide6.QtWidgets import (
     QButtonGroup,
     QComboBox,
+    QDateEdit,
     QDialog,
     QFileDialog,
     QFrame,
@@ -65,6 +67,7 @@ from ..util import (
     local_ipv4_addresses,
     primary_lan_ip,
     puls_pairing_link,
+    start_of_local_day,
     weekday_label,
 )
 from .charts import (
@@ -1342,7 +1345,7 @@ class WorkoutsPage(QWidget):
     def __init__(self, db: Database, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.db = db
-        self.days = 30
+        self._type_signature: tuple | None = None
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -1351,21 +1354,58 @@ class WorkoutsPage(QWidget):
 
         filter_row = QHBoxLayout()
         filter_row.setSpacing(8)
-        self.filter_group = QButtonGroup(self)
-        self.filter_group.setExclusive(True)
-        for index, (days, label) in enumerate(
-            ((7, "近 7 天"), (30, "近 30 天"), (90, "近 90 天"))
+        range_label = QLabel("时间范围")
+        range_label.setObjectName("subtle")
+        filter_row.addWidget(range_label)
+        self.range_combo = QComboBox()
+        self.range_combo.setFixedWidth(132)
+        for key, label in (
+            ("7", "近 7 天"),
+            ("30", "近 30 天"),
+            ("90", "近 90 天"),
+            ("365", "近 1 年"),
+            ("all", "全部历史"),
+            ("custom", "自定义范围…"),
         ):
-            button = QPushButton(label)
-            button.setObjectName("chipButton")
-            button.setCheckable(True)
-            button.setCursor(Qt.CursorShape.PointingHandCursor)
-            button.setChecked(days == 30)
-            button.clicked.connect(lambda _=False, d=days: self._set_days(d))
-            self.filter_group.addButton(button, index)
-            filter_row.addWidget(button)
+            self.range_combo.addItem(label, key)
+        self.range_combo.setCurrentIndex(1)
+        self.range_combo.currentIndexChanged.connect(self._on_range_changed)
+        filter_row.addWidget(self.range_combo)
+
+        filter_row.addSpacing(10)
+        type_label = QLabel("运动类型")
+        type_label.setObjectName("subtle")
+        filter_row.addWidget(type_label)
+        self.type_combo = QComboBox()
+        self.type_combo.setMinimumWidth(150)
+        self.type_combo.currentIndexChanged.connect(lambda _index=0: self.refresh())
+        filter_row.addWidget(self.type_combo)
         filter_row.addStretch(1)
         layout.addLayout(filter_row)
+
+        today = QDate.currentDate()
+        self.custom_row = QWidget()
+        custom_layout = QHBoxLayout(self.custom_row)
+        custom_layout.setContentsMargins(0, 0, 0, 0)
+        custom_layout.setSpacing(8)
+        from_label = QLabel("从")
+        from_label.setObjectName("subtle")
+        custom_layout.addWidget(from_label)
+        self.start_edit = self._make_date_edit(today.addDays(-29))
+        custom_layout.addWidget(self.start_edit)
+        to_label = QLabel("到")
+        to_label.setObjectName("subtle")
+        custom_layout.addWidget(to_label)
+        self.end_edit = self._make_date_edit(today)
+        custom_layout.addWidget(self.end_edit)
+        apply_button = QPushButton("应用")
+        apply_button.setObjectName("ghostButton")
+        apply_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        apply_button.clicked.connect(self._apply_custom)
+        custom_layout.addWidget(apply_button)
+        custom_layout.addStretch(1)
+        self.custom_row.setVisible(False)
+        layout.addWidget(self.custom_row)
 
         summary_row = QHBoxLayout()
         summary_row.setSpacing(12)
@@ -1377,7 +1417,7 @@ class WorkoutsPage(QWidget):
         layout.addLayout(summary_row)
 
         self.list_card = Card()
-        self.list_card.body.addLayout(card_header("训练列表", "点击上方时间范围筛选"))
+        self.list_card.body.addLayout(card_header("训练列表", "按时间范围和运动类型筛选"))
         self.workout_list = QVBoxLayout()
         self.workout_list.setSpacing(8)
         self.list_card.body.addLayout(self.workout_list)
@@ -1385,19 +1425,78 @@ class WorkoutsPage(QWidget):
         layout.addWidget(self.list_card)
         layout.addStretch(1)
 
-    def _set_days(self, days: int) -> None:
-        self.days = days
+    def _make_date_edit(self, value: QDate) -> QDateEdit:
+        edit = QDateEdit()
+        edit.setDate(value)
+        edit.setDisplayFormat("yyyy-MM-dd")
+        edit.setCalendarPopup(True)
+        edit.setMinimumDate(QDate(2000, 1, 1))
+        edit.setMaximumDate(QDate.currentDate())
+        edit.setFixedWidth(128)
+        return edit
+
+    def _on_range_changed(self, _index: int = 0) -> None:
+        self.custom_row.setVisible(self.range_combo.currentData() == "custom")
         self.refresh()
 
+    def _apply_custom(self) -> None:
+        if self.start_edit.date() > self.end_edit.date():
+            QMessageBox.warning(self, "日期范围", "开始日期不能晚于结束日期。")
+            return
+        self.refresh()
+
+    def _range_bounds(self) -> tuple[int, int | None]:
+        key = str(self.range_combo.currentData() or "30")
+        if key == "all":
+            return 0, None
+        if key == "custom":
+            start = self.start_edit.date()
+            end = self.end_edit.date()
+            start_dt = datetime(start.year(), start.month(), start.day())
+            end_dt = datetime(end.year(), end.month(), end.day()) + timedelta(days=1)
+            return int(start_dt.timestamp()), int(end_dt.timestamp())
+        days = max(1, int(key))
+        return start_of_local_day(offset_days=-(days - 1)), None
+
+    def _load_type_options(self) -> None:
+        rows = self.db.workout_type_counts()
+        signature = tuple(
+            (str(row["activity_type"] or "other"), int(row["n"])) for row in rows
+        )
+        if signature == self._type_signature:
+            return
+        self._type_signature = signature
+        current = self.type_combo.currentData()
+        self.type_combo.blockSignals(True)
+        self.type_combo.clear()
+        self.type_combo.addItem("全部类型", "")
+        for row in rows:
+            activity = str(row["activity_type"] or "other")
+            self.type_combo.addItem(
+                f"{display_activity(activity)} ({int(row['n'])})", activity
+            )
+        index = self.type_combo.findData(current)
+        self.type_combo.setCurrentIndex(max(0, index))
+        self.type_combo.blockSignals(False)
+
     def refresh(self) -> None:
-        workouts = analytics.recent_workouts(self.db, days=self.days, limit=500)
+        self._load_type_options()
+        start_ts, end_ts = self._range_bounds()
+        activity_type = str(self.type_combo.currentData() or "")
+        workouts = analytics.workout_history(
+            self.db,
+            start_ts,
+            end_ts,
+            activity_type or None,
+            limit=5000,
+        )
         _clear_layout(self.workout_list)
         if not workouts:
             self.workout_list.addWidget(
                 EmptyState(
                     "🏃",
-                    "这段时间没有运动记录",
-                    "在 iPhone 快捷指令中加入「查找体能训练」后，训练会自动同步到这里",
+                    "没有符合条件的运动记录",
+                    "换一个时间范围或运动类型，或等待新的训练同步",
                 )
             )
         else:

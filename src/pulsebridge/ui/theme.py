@@ -159,20 +159,31 @@ QPushButton#linkButton {
 }
 QPushButton#linkButton:hover { color: #7CF0BF; }
 
-QLineEdit, QSpinBox, QComboBox {
+QLineEdit, QSpinBox, QComboBox, QDateEdit {
     background: #0E151E;
     border: 1px solid #22303F;
     border-radius: 10px;
     padding: 7px 11px;
     selection-background-color: #264C3A;
 }
-QLineEdit:focus, QSpinBox:focus, QComboBox:focus { border-color: #35664F; }
-QComboBox::drop-down { border: none; width: 26px; }
+QLineEdit:focus, QSpinBox:focus, QComboBox:focus, QDateEdit:focus {
+    border-color: #35664F;
+}
+QComboBox::drop-down, QDateEdit::drop-down { border: none; width: 26px; }
 QComboBox QAbstractItemView {
     background: #121923; border: 1px solid #22303F;
     selection-background-color: #1C3830; outline: 0;
 }
 QSpinBox::up-button, QSpinBox::down-button { width: 18px; background: #16202B; border: none; }
+QCalendarWidget QWidget { background: #0E151E; color: #EAF0F7; }
+QCalendarWidget QAbstractItemView {
+    background: #121923;
+    selection-background-color: #1C3830;
+    selection-color: #EAF0F7;
+    outline: 0;
+}
+QCalendarWidget QToolButton { color: #EAF0F7; background: transparent; }
+QCalendarWidget QMenu { background: #121923; color: #EAF0F7; }
 QCheckBox { spacing: 9px; color: #C8D5E4; }
 QCheckBox::indicator { width: 17px; height: 17px; }
 QToolTip {

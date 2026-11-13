@@ -647,9 +647,7 @@ def sleep_minutes_today(db: Database) -> float:
     return sum(_stage_minutes(r) for r in rows if (r.get("value_text") or "") != "awake")
 
 
-def recent_workouts(db: Database, days: int = 30, limit: int = 100) -> list[dict[str, Any]]:
-    since = start_of_local_day(offset_days=-(days - 1))
-    rows = db.workout_rows(since, limit=limit)
+def _prepare_workouts(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     for row in rows:
         if not row.get("duration_s") and row.get("end_ts") and row.get("start_ts"):
             row["duration_s"] = max(0, int(row["end_ts"]) - int(row["start_ts"]))
@@ -661,6 +659,28 @@ def recent_workouts(db: Database, days: int = 30, limit: int = 100) -> list[dict
             except (TypeError, ValueError):
                 row["metadata"] = None
     return rows
+
+
+def workout_history(
+    db: Database,
+    start_ts: int = 0,
+    end_ts: int | None = None,
+    activity_type: str | None = None,
+    limit: int = 5000,
+) -> list[dict[str, Any]]:
+    """按时间范围（左闭右开）和运动类型查询训练记录。"""
+    rows = db.workout_rows(
+        start_ts,
+        limit=limit,
+        until_ts=end_ts,
+        activity_type=activity_type or None,
+    )
+    return _prepare_workouts(rows)
+
+
+def recent_workouts(db: Database, days: int = 30, limit: int = 100) -> list[dict[str, Any]]:
+    since = start_of_local_day(offset_days=-(days - 1))
+    return workout_history(db, since, limit=limit)
 
 
 def today_workouts(db: Database) -> list[dict[str, Any]]:

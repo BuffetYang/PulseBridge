@@ -453,10 +453,29 @@ class Database:
         )
         return [dict(r) for r in rows]
 
-    def workout_rows(self, since_ts: int, limit: int = 200) -> list[dict]:
+    def workout_rows(
+        self,
+        since_ts: int,
+        limit: int = 200,
+        until_ts: int | None = None,
+        activity_type: str | None = None,
+    ) -> list[dict]:
+        sql = "SELECT * FROM workouts WHERE start_ts >= ?"
+        params: list[Any] = [since_ts]
+        if until_ts is not None:
+            sql += " AND start_ts < ?"
+            params.append(until_ts)
+        if activity_type:
+            sql += " AND activity_type = ?"
+            params.append(activity_type)
+        sql += " ORDER BY start_ts DESC LIMIT ?"
+        params.append(limit)
+        return [dict(r) for r in self._rows(sql, tuple(params))]
+
+    def workout_type_counts(self) -> list[dict]:
         rows = self._rows(
-            "SELECT * FROM workouts WHERE start_ts >= ? ORDER BY start_ts DESC LIMIT ?",
-            (since_ts, limit),
+            "SELECT activity_type, COUNT(*) AS n FROM workouts "
+            "GROUP BY activity_type ORDER BY n DESC, activity_type"
         )
         return [dict(r) for r in rows]
 
