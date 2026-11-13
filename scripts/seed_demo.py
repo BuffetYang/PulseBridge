@@ -353,6 +353,8 @@ def main() -> int:
 
     config = Config(data_dir / "config.json")
     config.set("port", int(os.environ.get("PULSEBRIDGE_DEMO_PORT", "18765")))
+    config.set("onboarding_done", True)
+    config.set("update_check_enabled", False)
 
     app = QApplication([])
     app.setApplicationName("PulseBridge")

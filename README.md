@@ -17,6 +17,8 @@ PulseBridge 让你的 iPhone / Apple Watch 健康与运动数据自动出现在 
 - **桌面悬浮球（可选）**：悬停查看今日步数、睡眠、静息心率和活动圆环；
   自带步数换算、连续达标、动态表情和随机小贴士，可拖动到任意位置。
 - **开箱即用**：单个桌面程序，内置接收服务、托盘常驻、开机自启、二维码配对。
+- **首次设置向导**：防火墙、PulsHealth 配对二维码、导入入口一步步完成。
+- **安装包与更新检查**：Windows 安装包按用户安装；启动时每天检查一次新版本。
 - **固定地址**：mDNS 广播 `http://pulsebridge-xxxx.local:8765`，同一 Wi-Fi 下电脑换 IP
   通常不需要重新配对手机。
 - **为 AI 打底**：结构化存储 + 一键导出 JSON，后续可接入大模型做健康分析。
@@ -43,6 +45,10 @@ PulseBridge 让你的 iPhone / Apple Watch 健康与运动数据自动出现在 
 
 <p align="center">
   <img src="docs/screenshots/floating.png" width="360" alt="桌面悬浮球">
+</p>
+
+<p align="center">
+  <img src="docs/screenshots/onboarding.png" width="420" alt="首次设置向导">
 </p>
 
 ---
@@ -223,19 +229,26 @@ uv run python -m pulsebridge --port 9000
 └── pulsebridge.db   # SQLite（WAL）
 ```
 
-## 打包为 exe
+## 打包与发布
 
 ```bash
-uv add --dev pyinstaller
-uv run python scripts/make_icon.py            # 生成 assets/pulsebridge.ico
-uv run pyinstaller --noconfirm --windowed --name PulseBridge \
-  --icon assets/pulsebridge.ico \
-  --collect-submodules PySide6 \
-  --collect-submodules zeroconf \
-  scripts/run_app.py
+uv run --with pyinstaller python scripts/build_windows.py
 ```
 
-产物在 `dist/PulseBridge/`。建议将整个目录压缩分发，首次运行仍会请求防火墙权限。
+产物：
+
+```
+dist/PulseBridge/                              便携目录
+dist/PulseBridge-v<版本>-windows-x64.zip       便携压缩包
+dist/installer/PulseBridge-Setup-<版本>.exe    Inno Setup 安装包（需安装 Inno Setup 6）
+dist/SHA256SUMS.txt                            校验和
+```
+
+安装包按用户安装到 `%LOCALAPPDATA%\Programs\PulseBridge`，不会删除
+`%APPDATA%\PulseBridge` 里的数据；包含开始菜单/桌面快捷方式和卸载项。
+
+第三方许可证见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) 和 `licenses/`，
+发布包会一并复制到安装目录。
 
 ## 开发
 

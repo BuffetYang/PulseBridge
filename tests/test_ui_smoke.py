@@ -23,6 +23,8 @@ def test_main_window_builds(tmp_path) -> None:
 
     config = Config(tmp_path / "config.json")
     config.set("mdns_enabled", False)
+    config.set("onboarding_done", True)
+    config.set("update_check_enabled", False)
     db = Database(tmp_path / "test.db")
     controller = ServerController(config, db)
     window = MainWindow(config, db, controller, IngestBus())
@@ -61,6 +63,30 @@ def test_main_window_builds(tmp_path) -> None:
     window._quitting = True
     window.close()
     db.close()
+
+
+def test_onboarding_dialog_builds(tmp_path) -> None:
+    from PySide6.QtWidgets import QApplication
+
+    from pulsebridge.config import Config
+    from pulsebridge.server import ServerController
+    from pulsebridge.ui.onboarding import OnboardingDialog
+
+    app = QApplication.instance() or QApplication([])
+    config = Config(tmp_path / "config.json")
+    config.set("port", 0)
+    db = Database(tmp_path / "test.db")
+    controller = ServerController(config, db)
+    controller.start()
+    try:
+        dialog = OnboardingDialog(config, controller)
+        assert dialog.address_copy.value().startswith("http://")
+        assert dialog.qr_label.text() or dialog.qr_label.pixmap() is not None
+        dialog.close()
+    finally:
+        controller.stop()
+        db.close()
+        app.processEvents()
 
 
 def test_ai_model_profiles_keep_keys(tmp_path) -> None:

@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import threading
 import time
 from datetime import datetime
 from typing import Any
 
-from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QAction
+from PySide6.QtCore import QObject, Qt, QTimer, QUrl, Signal
+from PySide6.QtGui import QAction, QDesktopServices
 from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
@@ -16,6 +17,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QMainWindow,
     QMenu,
+    QMessageBox,
     QPushButton,
     QStackedWidget,
     QSystemTrayIcon,
@@ -31,6 +33,7 @@ from ..reminders import due_occurrence
 from ..server import ServerController
 from ..util import humanize_ago, local_ipv4_addresses, primary_lan_ip
 from .floating import FloatingWidget
+from .onboarding import OnboardingDialog
 from .icons import app_icon, brand_pixmap
 from .pages import (
     AiPage,
@@ -46,6 +49,24 @@ from .pages import (
     open_puls_guide_dialog,
 )
 from .theme import COLORS
+
+
+class _UpdateWorker(QObject):
+    found = Signal(dict)
+    none = Signal()
+    failed = Signal(str)
+
+    def run(self) -> None:
+        try:
+            from ..update import check_for_update
+
+            info = check_for_update(APP_VERSION)
+            if info is None:
+                self.none.emit()
+            else:
+                self.found.emit(dict(info.__dict__))
+        except Exception as exc:  # noqa: BLE001
+            self.failed.emit(str(exc))
 
 NAV_ITEMS = [
     ("📊", "仪表盘"),
@@ -129,6 +150,8 @@ class MainWindow(QMainWindow):
             controller,
             self.refresh_all,
             on_floating_changed=self._on_floating_changed,
+            on_show_onboarding=self._show_onboarding,
+            on_check_update=lambda: self._check_updates(manual=True),
         )
         self.pages = [
             self.dashboard,
@@ -160,7 +183,12 @@ class MainWindow(QMainWindow):
         self._mdns: MdnsAdvertiser | None = None
         self._mdns_key: tuple | None = None
         self._mdns_retry_at = 0.0
+        self._update_thread: threading.Thread | None = None
+        self._update_worker: _UpdateWorker | None = None
+        self._update_manual = False
         QTimer.singleShot(0, self._sync_mdns)
+        QTimer.singleShot(1200, self._maybe_show_onboarding)
+        QTimer.singleShot(8000, self._maybe_auto_check_update)
 
     # ------------------------------------------------------------------
     def _build_sidebar(self) -> QFrame:
@@ -262,6 +290,109 @@ class MainWindow(QMainWindow):
         self.showNormal()
         self.raise_()
         self.activateWindow()
+
+    def _maybe_show_onboarding(self) -> None:
+        if bool(self.config.get("onboarding_done")):
+            return
+        self._show_onboarding()
+
+    def _show_onboarding(self) -> None:
+        self._show_window()
+        dialog = OnboardingDialog(
+            self.config,
+            self.controller,
+            on_open_settings=lambda: self.navigate(7),
+            parent=self,
+        )
+        dialog.exec()
+        self.config.set("onboarding_done", True)
+
+    def _maybe_auto_check_update(self) -> None:
+        if not bool(self.config.get("update_check_enabled", True)):
+            return
+        last = int(self.config.get("last_update_check_ts") or 0)
+        if time.time() - last < 86400:
+            return
+        self._check_updates(manual=False)
+
+    def _check_updates(self, manual: bool = False) -> None:
+        if self._update_thread is not None and self._update_thread.is_alive():
+            if manual:
+                self.settings.set_update_status("正在检查更新…", COLORS["muted"])
+            return
+        self._update_manual = manual
+        if manual:
+            self.settings.set_update_status("正在检查更新…", COLORS["muted"])
+        worker = _UpdateWorker()
+        thread = threading.Thread(target=worker.run, daemon=True)
+        worker.found.connect(self._on_update_found)
+        worker.none.connect(self._on_update_none)
+        worker.failed.connect(self._on_update_failed)
+        self._update_worker = worker
+        self._update_thread = thread
+        thread.start()
+
+    def _on_update_found(self, info: dict) -> None:
+        self.config.set("last_update_check_ts", int(time.time()))
+        version = str(info.get("version") or "")
+        self.settings.set_update_status(
+            f"发现新版本 v{version}", COLORS["accent"]
+        )
+        notified = str(self.config.get("last_update_notified_version") or "")
+        if self._update_manual or notified != version:
+            self.config.set("last_update_notified_version", version)
+            self.tray.showMessage(
+                APP_NAME,
+                f"发现新版本 v{version}，可在设置中查看。",
+                QSystemTrayIcon.MessageIcon.Information,
+                5000,
+            )
+        if self._update_manual:
+            self._show_update_dialog(info)
+        self._update_thread = None
+        self._update_worker = None
+
+    def _on_update_none(self) -> None:
+        self.config.set("last_update_check_ts", int(time.time()))
+        self.settings.set_update_status("已是最新版本。", COLORS["muted"])
+        self._update_thread = None
+        self._update_worker = None
+
+    def _on_update_failed(self, message: str) -> None:
+        self.config.set("last_update_check_ts", int(time.time()))
+        self.settings.set_update_status(
+            "检查更新失败：" + message[:200], COLORS["red"]
+        )
+        if self._update_manual:
+            QMessageBox.warning(
+                self, "检查更新", f"无法检查更新：\n{message[:500]}"
+            )
+        self._update_thread = None
+        self._update_worker = None
+
+    def _show_update_dialog(self, info: dict) -> None:
+        box = QMessageBox(self)
+        box.setWindowTitle("发现新版本")
+        box.setText(f"PulseBridge v{info.get('version')} 可用")
+        notes = str(info.get("notes") or "")
+        if len(notes) > 900:
+            notes = notes[:900] + "…"
+        box.setInformativeText(notes or "打开下载页获取新版本。")
+        open_button = box.addButton(
+            "打开下载页", QMessageBox.ButtonRole.AcceptRole
+        )
+        box.addButton("稍后", QMessageBox.ButtonRole.RejectRole)
+        box.exec()
+        if box.clickedButton() is open_button:
+            QDesktopServices.openUrl(
+                QUrl(
+                    str(
+                        info.get("download_url")
+                        or info.get("page_url")
+                        or ""
+                    )
+                )
+            )
 
     def _on_floating_changed(self, enabled: bool) -> None:
         self.floating.set_enabled(enabled)

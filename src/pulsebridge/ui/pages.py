@@ -2727,6 +2727,8 @@ class SettingsPage(QWidget):
         controller: ServerController,
         refresh_all: RefreshAll,
         on_floating_changed: Callable[[bool], None] | None = None,
+        on_show_onboarding: Callable[[], None] | None = None,
+        on_check_update: Callable[[], None] | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -2735,6 +2737,8 @@ class SettingsPage(QWidget):
         self.controller = controller
         self.refresh_all = refresh_all
         self.on_floating_changed = on_floating_changed
+        self.on_show_onboarding = on_show_onboarding
+        self.on_check_update = on_check_update
         self._loading = False
         self._import_thread: threading.Thread | None = None
         self._import_worker: _HealthImportWorker | None = None
@@ -2771,6 +2775,12 @@ class SettingsPage(QWidget):
         floating_hint.setObjectName("subtle")
         floating_hint.setWordWrap(True)
         general.body.addWidget(floating_hint)
+
+        wizard_button = QPushButton("重新运行首次设置向导")
+        wizard_button.setObjectName("ghostButton")
+        wizard_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        wizard_button.clicked.connect(self._show_onboarding)
+        general.body.addWidget(wizard_button, 0, Qt.AlignmentFlag.AlignLeft)
         self.startup_toggle.toggled.connect(self._on_startup_changed)
         self.minimized_toggle.toggled.connect(
             lambda checked: self.config.set("start_minimized", checked)
@@ -2975,7 +2985,7 @@ class SettingsPage(QWidget):
         )
         layout.addWidget(import_card)
 
-        # 关于
+        # 关于与更新
         about = Card()
         about.body.addLayout(card_header(f"{APP_NAME} v{APP_VERSION}", "本地优先的 Apple 健康数据看板"))
         about_text = QLabel(
@@ -2985,6 +2995,32 @@ class SettingsPage(QWidget):
         about_text.setWordWrap(True)
         about_text.setObjectName("subtle")
         about.body.addWidget(about_text)
+
+        self.update_toggle = ToggleSwitch()
+        about.body.addLayout(
+            _toggle_row("启动时检查更新（每天最多一次）", self.update_toggle)
+        )
+        self.update_toggle.toggled.connect(self._on_update_toggle)
+        update_row = QHBoxLayout()
+        update_button = QPushButton("检查更新")
+        update_button.setObjectName("ghostButton")
+        update_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        update_button.clicked.connect(self._check_update)
+        update_row.addWidget(update_button)
+        home_button = QPushButton("打开项目主页")
+        home_button.setObjectName("ghostButton")
+        home_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        home_button.clicked.connect(
+            lambda: QDesktopServices.openUrl(
+                QUrl("https://github.com/BuffetYang/PulseBridge")
+            )
+        )
+        update_row.addWidget(home_button)
+        self.update_status = QLabel("")
+        self.update_status.setObjectName("subtle")
+        self.update_status.setWordWrap(True)
+        update_row.addWidget(self.update_status, 1)
+        about.body.addLayout(update_row)
         layout.addWidget(about)
         layout.addStretch(1)
 
@@ -2999,6 +3035,9 @@ class SettingsPage(QWidget):
             bool(self.config.get("floating_enabled"))
         )
         self.mdns_toggle.setChecked(bool(self.config.get("mdns_enabled", True)))
+        self.update_toggle.setChecked(
+            bool(self.config.get("update_check_enabled", True))
+        )
         self._load_import_settings()
         self._loading = False
 
@@ -3198,6 +3237,25 @@ class SettingsPage(QWidget):
             return
         self.config.set("mdns_enabled", enabled)
         self.refresh_all()
+
+    def _show_onboarding(self) -> None:
+        if self.on_show_onboarding is not None:
+            self.on_show_onboarding()
+
+    def _on_update_toggle(self, enabled: bool) -> None:
+        if self._loading:
+            return
+        self.config.set("update_check_enabled", enabled)
+
+    def _check_update(self) -> None:
+        if self.on_check_update is not None:
+            self.on_check_update()
+
+    def set_update_status(self, text: str, color: str | None = None) -> None:
+        self.update_status.setText(text)
+        self.update_status.setStyleSheet(
+            f"color: {color};" if color else ""
+        )
 
     def _apply_port(self) -> None:
         text = self.port_edit.text().strip()

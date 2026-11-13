@@ -1,5 +1,28 @@
 # Changelog
 
+## v2.5.0 — 2026-11-13
+
+### 新增
+
+- **首次设置向导**：防火墙、PulsHealth 配对二维码（固定地址 / 局域网地址）、
+  导入历史数据入口；设置里可以重新运行。
+- **更新检查**：启动时每天最多检查一次，发现新版本托盘通知；设置里可手动检查、
+  查看更新说明并打开下载页。
+- **Windows 安装包**：Inno Setup 按用户安装到 `%LOCALAPPDATA%\Programs\PulseBridge`，
+  保留 `%APPDATA%\PulseBridge` 用户数据，带开始菜单/桌面快捷方式和卸载项。
+- **发布脚本**：`scripts/build_windows.py` 一次生成便携 zip、安装包和
+  `SHA256SUMS.txt`。
+
+### 合规
+
+- 新增 `THIRD_PARTY_NOTICES.md` 和 `licenses/`：Qt/PySide6（LGPL-3.0）、
+  zeroconf（LGPL-2.1）、Python（PSF）、segno（BSD-3-Clause）、ifaddr（MIT）、
+  PyInstaller 例外、packaging（Apache-2.0）等。
+
+### 测试
+
+- **63 个自动化测试**（新增 mDNS、更新检查、向导构建、防火墙 UDP 规则）。
+
 ## v2.4.0 — 2026-11-13
 
 ### 新增

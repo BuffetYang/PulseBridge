@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 
 APP_NAME = "PulseBridge"
-APP_VERSION = "2.4.0"
+APP_VERSION = "2.5.0"
 DEFAULT_PORT = 8765
 
 DEFAULTS: dict[str, Any] = {
@@ -44,6 +44,10 @@ DEFAULTS: dict[str, Any] = {
     "floating_x": -1,
     "floating_y": -1,
     "mdns_enabled": True,
+    "onboarding_done": False,
+    "update_check_enabled": True,
+    "last_update_check_ts": 0,
+    "last_update_notified_version": "",
 }
 
 
