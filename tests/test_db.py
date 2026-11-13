@@ -250,11 +250,94 @@ def test_activity_rings_merge_live_samples_and_summary(tmp_path) -> None:
 
     rings = analytics.activity_rings(db)
     assert rings["move"] == 100.0  # 实时样本高于导入摘要
-    assert rings["exercise"] == 60.0  # 摘要高于 30 分钟训练
+    assert rings["exercise"] == 60.0  # 摘要高于训练/估算
+    assert rings["exercise_estimated"] is False
+    assert rings["exercise_source"] == "summary"
     assert rings["stand"] == 1.0  # 由步数估算
     assert rings["move_goal"] == 500.0
     assert rings["stand_goal"] == 6.0
     assert rings["live"] is True
+    db.close()
+
+
+def test_exercise_minutes_are_estimated_from_signals(tmp_path) -> None:
+    db = Database(tmp_path / "test.db")
+    day_start = start_of_local_day()
+    samples = [
+        _sample(
+            "rest",
+            "resting_heart_rate",
+            day_start + 60,
+            60.0,
+            unit="count/min",
+        ),
+        _sample("weight", "body_mass", day_start + 120, 70.0, unit="kg"),
+    ]
+    # 10 分钟心率 120 bpm（高于 40% HRR 阈值）
+    for index in range(10):
+        samples.append(
+            _sample(
+                f"hr{index}",
+                "heart_rate",
+                day_start + 10 * 60 + index * 60,
+                120.0,
+                unit="count/min",
+            )
+        )
+    # 10 分钟 120 步/分
+    samples.append(
+        {
+            **_sample(
+                "steps",
+                "steps",
+                day_start + 30 * 60,
+                1200.0,
+                unit="步",
+            ),
+            "end_ts": day_start + 40 * 60,
+        }
+    )
+    # 10 分钟活动能量 100 kcal（约 9.2 MET，剧烈）
+    samples.append(
+        {
+            **_sample(
+                "energy",
+                "active_energy",
+                day_start + 90 * 60,
+                100.0,
+                unit="kcal",
+            ),
+            "end_ts": day_start + 100 * 60,
+        }
+    )
+    db.insert_samples(samples)
+    db.insert_workouts(
+        [
+            {
+                "uuid": "w-estimate",
+                "activity_type": "running",
+                "start_ts": day_start + 60 * 60,
+                "end_ts": day_start + 75 * 60,
+                "duration_s": 900,
+                "distance_m": 3000,
+                "energy_kcal": 200,
+                "avg_hr": 150,
+                "max_hr": 170,
+                "source": "Apple Watch",
+                "metadata": None,
+            }
+        ]
+    )
+
+    estimate = analytics.estimate_exercise_minutes(
+        db, day_start, day_start + 86400
+    )
+    assert 40 <= estimate <= 50
+
+    rings = analytics.activity_rings(db)
+    assert rings["exercise"] >= 40
+    assert rings["exercise_estimated"] is True
+    assert rings["exercise_source"] in ("estimate", "workout")
     db.close()
 
 

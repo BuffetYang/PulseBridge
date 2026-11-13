@@ -552,11 +552,15 @@ class RingMetric(QWidget):
         self._color = QColor(color)
         self._value = 0.0
         self._goal = 0.0
+        self._estimated = False
         self.setMinimumSize(120, 150)
 
-    def set_data(self, value: float | None, goal: float | None) -> None:
+    def set_data(
+        self, value: float | None, goal: float | None, estimated: bool = False
+    ) -> None:
         self._value = max(0.0, float(value or 0))
         self._goal = max(0.0, float(goal or 0))
+        self._estimated = bool(estimated)
         self.update()
 
     def paintEvent(self, event) -> None:  # noqa: N802
@@ -587,6 +591,8 @@ class RingMetric(QWidget):
         painter.setPen(QPen(QColor(COLORS["text"])))
         painter.setFont(_axis_font(self, 15, bold=True))
         percent = f"{progress * 100:.0f}%" if self._goal > 0 else "--"
+        if self._estimated:
+            percent = "≈" + percent
         painter.drawText(ring, Qt.AlignmentFlag.AlignCenter, percent)
 
         painter.setPen(QPen(QColor(COLORS["muted"])))
@@ -598,12 +604,13 @@ class RingMetric(QWidget):
         )
         value_text = f"{self._value:.{self.digits}f}"
         goal_text = f"{self._goal:.{self.digits}f}"
+        prefix = "≈ " if self._estimated else ""
         painter.setPen(QPen(QColor(COLORS["text"])))
         painter.setFont(_axis_font(self, 11, bold=True))
         painter.drawText(
             QRectF(0, ring.bottom() + 26, self.width(), 18),
             Qt.AlignmentFlag.AlignCenter,
-            f"{value_text} / {goal_text} {self.unit}".strip(),
+            f"{prefix}{value_text} / {goal_text} {self.unit}".strip(),
         )
 
 

@@ -28,6 +28,7 @@ from ..db import Database
 from ..reminders import due_occurrence
 from ..server import ServerController
 from ..util import humanize_ago, primary_lan_ip
+from .floating import FloatingWidget
 from .icons import app_icon, brand_pixmap
 from .pages import (
     AiPage,
@@ -113,7 +114,20 @@ class MainWindow(QMainWindow):
             on_address_changed=self._update_sidebar_status,
         )
         self.ai = AiPage(db, config, lambda: export_data(self.ai, 30))
-        self.settings = SettingsPage(db, config, controller, self.refresh_all)
+        self.floating = FloatingWidget(
+            db,
+            config,
+            lambda: self._show_page(0),
+            lambda: self._show_page(6),
+            self,
+        )
+        self.settings = SettingsPage(
+            db,
+            config,
+            controller,
+            self.refresh_all,
+            on_floating_changed=self._on_floating_changed,
+        )
         self.pages = [
             self.dashboard,
             self.trends,
@@ -139,6 +153,8 @@ class MainWindow(QMainWindow):
         self.timer.start()
         self._update_sidebar_status()
         QTimer.singleShot(3000, self._check_import_reminder)
+        if bool(config.get("floating_enabled")):
+            QTimer.singleShot(0, lambda: self.floating.set_enabled(True))
 
     # ------------------------------------------------------------------
     def _build_sidebar(self) -> QFrame:
@@ -241,8 +257,12 @@ class MainWindow(QMainWindow):
         self.raise_()
         self.activateWindow()
 
+    def _on_floating_changed(self, enabled: bool) -> None:
+        self.floating.set_enabled(enabled)
+
     def _quit(self) -> None:
         self._quitting = True
+        self.floating.shutdown()
         self.tray.hide()
         QApplication.quit()
 
@@ -295,6 +315,7 @@ class MainWindow(QMainWindow):
 
     def _on_ingested(self, summary: dict[str, Any]) -> None:
         self._update_sidebar_status()
+        self.floating.refresh()
         if self.isVisible():
             page = self.pages[self.stack.currentIndex()]
             refresh = getattr(page, "refresh", None)
@@ -357,6 +378,8 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event) -> None:  # noqa: N802
         if self._quitting or not bool(self.config.get("close_to_tray", True)):
             event.accept()
+            if not self._quitting:
+                self._quit()
             return
         event.ignore()
         self.hide()

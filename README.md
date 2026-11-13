@@ -11,6 +11,11 @@ PulseBridge 让你的 iPhone / Apple Watch 健康与运动数据自动出现在 
 - **本地优先**：数据只存在你的电脑上，不上传云端，不注册账号。
 - **指标库**：自动展示数据库中的全部指标（Apple 导出可达 40+ 种），支持搜索与趋势跳转。
 - **活动圆环与睡眠详情**：Move / Exercise / Stand 圆环、睡眠阶段时间轴、夜间趋势。
+- **锻炼分钟估算**：没有官方 Exercise Time 时，按心率储备（ACSM）、步频（100/130 步/分）
+  和活动能量 MET（WHO）逐分钟估算，界面显示 `≈`。
+  说明见 [docs/exercise-estimate.md](docs/exercise-estimate.md)。
+- **桌面悬浮球（可选）**：悬停查看今日步数、睡眠、静息心率和活动圆环；
+  自带步数换算、连续达标、动态表情和随机小贴士，可拖动到任意位置。
 - **开箱即用**：单个桌面程序，内置接收服务、托盘常驻、开机自启、二维码配对。
 - **为 AI 打底**：结构化存储 + 一键导出 JSON，后续可接入大模型做健康分析。
 
@@ -32,6 +37,10 @@ PulseBridge 让你的 iPhone / Apple Watch 健康与运动数据自动出现在 
 <p align="center">
   <img src="docs/screenshots/ai.png" width="49%" alt="AI 健康周报">
   <img src="docs/screenshots/settings.png" width="49%" alt="设置">
+</p>
+
+<p align="center">
+  <img src="docs/screenshots/floating.png" width="360" alt="桌面悬浮球">
 </p>
 
 ---

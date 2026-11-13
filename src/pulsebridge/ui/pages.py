@@ -370,7 +370,8 @@ class DashboardPage(QWidget):
         self.activity_card = Card()
         self.activity_card.setToolTip(
             "活动能量/锻炼来自实时同步样本，并与 Apple 活动摘要取较大值；"
-            "站立小时在缺少官方数据时由有步数的小时数估算"
+            "锻炼分钟数缺少官方 Exercise Time 时，用心率区间 / 步频 / 活动能量估算"
+            "（显示 ≈）；站立小时在缺少官方数据时由有步数的小时数估算"
         )
         activity_header = QHBoxLayout()
         activity_title = QLabel("活动圆环")
@@ -602,7 +603,17 @@ class DashboardPage(QWidget):
             self.activity_date_label.setText("今日活动")
 
         self.ring_move.set_data(rings["move"], rings["move_goal"] or 500)
-        self.ring_exercise.set_data(rings["exercise"], rings["exercise_goal"] or 30)
+        exercise_estimated = bool(rings.get("exercise_estimated"))
+        self.ring_exercise.set_data(
+            rings["exercise"],
+            rings["exercise_goal"] or 30,
+            estimated=exercise_estimated,
+        )
+        self.ring_exercise.setToolTip(
+            "锻炼分钟数为估算：心率区间 / 步频 / 活动能量"
+            if exercise_estimated
+            else "来自 Apple 官方锻炼时间或活动摘要"
+        )
         self.ring_stand.set_data(rings["stand"], rings["stand_goal"] or 12)
 
     def _refresh_status(self, stats: dict[str, Any]) -> None:
@@ -2681,6 +2692,7 @@ class SettingsPage(QWidget):
         config: Config,
         controller: ServerController,
         refresh_all: RefreshAll,
+        on_floating_changed: Callable[[bool], None] | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -2688,6 +2700,7 @@ class SettingsPage(QWidget):
         self.config = config
         self.controller = controller
         self.refresh_all = refresh_all
+        self.on_floating_changed = on_floating_changed
         self._loading = False
         self._import_thread: threading.Thread | None = None
         self._import_worker: _HealthImportWorker | None = None
@@ -2705,6 +2718,7 @@ class SettingsPage(QWidget):
         self.startup_toggle = ToggleSwitch()
         self.minimized_toggle = ToggleSwitch()
         self.tray_toggle = ToggleSwitch()
+        self.floating_toggle = ToggleSwitch()
         general.body.addLayout(
             _toggle_row("开机自动启动 PulseBridge", self.startup_toggle)
         )
@@ -2714,6 +2728,15 @@ class SettingsPage(QWidget):
         general.body.addLayout(
             _toggle_row("关闭窗口时最小化到托盘（不退出）", self.tray_toggle)
         )
+        general.body.addLayout(
+            _toggle_row("显示桌面悬浮球（悬停查看今日数据）", self.floating_toggle)
+        )
+        floating_hint = QLabel(
+            "悬浮球可拖动到任意位置；默认关闭。悬停时只读取本地数据。"
+        )
+        floating_hint.setObjectName("subtle")
+        floating_hint.setWordWrap(True)
+        general.body.addWidget(floating_hint)
         self.startup_toggle.toggled.connect(self._on_startup_changed)
         self.minimized_toggle.toggled.connect(
             lambda checked: self.config.set("start_minimized", checked)
@@ -2721,6 +2744,7 @@ class SettingsPage(QWidget):
         self.tray_toggle.toggled.connect(
             lambda checked: self.config.set("close_to_tray", checked)
         )
+        self.floating_toggle.toggled.connect(self._on_floating_changed)
         layout.addWidget(general)
 
         # 接收服务
@@ -2921,6 +2945,9 @@ class SettingsPage(QWidget):
         self.startup_toggle.setChecked(startup.is_launch_at_startup())
         self.minimized_toggle.setChecked(bool(self.config.get("start_minimized")))
         self.tray_toggle.setChecked(bool(self.config.get("close_to_tray")))
+        self.floating_toggle.setChecked(
+            bool(self.config.get("floating_enabled"))
+        )
         self._load_import_settings()
         self._loading = False
 
@@ -3107,6 +3134,13 @@ class SettingsPage(QWidget):
             self.config.set("launch_at_startup", enabled)
         else:
             self.startup_toggle.setChecked(not enabled)
+
+    def _on_floating_changed(self, enabled: bool) -> None:
+        if self._loading:
+            return
+        self.config.set("floating_enabled", enabled)
+        if self.on_floating_changed is not None:
+            self.on_floating_changed(enabled)
 
     def _apply_port(self) -> None:
         text = self.port_edit.text().strip()

@@ -50,6 +50,13 @@ def test_main_window_builds(tmp_path) -> None:
     assert window.stack.currentIndex() == 1
     assert window.trends.metric_combo.currentData() == "heart_rate"
 
+    window.floating.set_enabled(True)
+    app.processEvents()
+    assert window.floating.ball.isVisible()
+    window.floating.set_enabled(False)
+    app.processEvents()
+    assert not window.floating.ball.isVisible()
+
     window._quitting = True
     window.close()
     db.close()

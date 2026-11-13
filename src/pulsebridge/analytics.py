@@ -467,6 +467,133 @@ def _cumulative_for_day(db: Database, metric: str, day: str, day_start: int) -> 
     return 0.0
 
 
+def _minute_span(day_start: int, start_ts: int, end_ts: int) -> range:
+    if end_ts <= start_ts:
+        end_ts = start_ts + 60
+    first = max(0, (int(start_ts) - day_start) // 60)
+    last = min(1439, (int(end_ts) - 1 - day_start) // 60)
+    return range(first, last + 1) if last >= first else range(0)
+
+
+def estimate_exercise_minutes(
+    db: Database, day_start: int, day_end: int | None = None
+) -> float:
+    """估算某天的“锻炼分钟数”（Apple Exercise 圆环的近似值）。
+
+    参考的公开标准：
+    - ACSM / WHO：中等强度约为 40–59% 心率储备，剧烈为 60–89%；
+    - Tudor-Locke 步频研究：约 100 步/分接近中等强度，130 步/分为剧烈；
+    - WHO / Compendium of Physical Activities：中等强度 ≥3 METs，剧烈 ≥6 METs。
+
+    这里把心率区间、步频、活动能量（换算 MET）和训练区间按分钟取并集，
+    同一分钟只计一次。Apple 的官方算法未公开，所以结果只是近似值。
+    """
+    day_end = day_end or day_start + 86400
+    moderate: set[int] = set()
+    vigorous: set[int] = set()
+
+    # 1) 心率储备（ACSM）：默认最大心率 190，静息心率优先用官方值。
+    heart_rows = db.samples_between("heart_rate", day_start, day_end, limit=20000)
+    points = sorted(
+        (
+            int(row["start_ts"]),
+            int(row.get("end_ts") or row["start_ts"]),
+            float(row["value"]),
+        )
+        for row in heart_rows
+        if row.get("value") is not None
+    )
+    if points:
+        resting = None
+        for point in reversed(resting_heart_rate_series(db, 14)):
+            if point.get("value") is not None:
+                resting = float(point["value"])
+                break
+        if resting is None:
+            values = sorted(value for _ts, _end, value in points)
+            resting = values[max(0, len(values) // 10 - 1)]
+        max_hr = 190.0
+        moderate_hr = resting + 0.40 * (max_hr - resting)
+        vigorous_hr = resting + 0.60 * (max_hr - resting)
+        for index, (start, end, value) in enumerate(points):
+            next_start = points[index + 1][0] if index + 1 < len(points) else start + 300
+            cover_end = max(end, start + 60)
+            if next_start > start:
+                cover_end = min(cover_end, next_start)
+            cover_end = max(start + 60, min(cover_end, start + 300, day_end))
+            for minute in _minute_span(day_start, start, cover_end):
+                if value >= vigorous_hr:
+                    vigorous.add(minute)
+                elif value >= moderate_hr:
+                    moderate.add(minute)
+
+    # 2) 步频（Tudor-Locke）：按来源分别计算，再取每分钟最大的来源，避免双计。
+    step_rows = db.samples_between("steps", day_start, day_end, limit=20000)
+    per_source: dict[str, dict[int, float]] = {}
+    for row in step_rows:
+        value = float(row.get("value") or 0)
+        start = int(row["start_ts"])
+        end = int(row.get("end_ts") or start)
+        duration = end - start
+        if value <= 0 or duration < 30:
+            continue
+        cadence = value / (duration / 60.0)
+        source = str(row.get("source") or "")
+        bucket = per_source.setdefault(source, {})
+        for minute in _minute_span(day_start, start, end):
+            bucket[minute] = bucket.get(minute, 0.0) + cadence
+    if per_source:
+        for minute in range(1440):
+            cadence = max(
+                (bucket.get(minute, 0.0) for bucket in per_source.values()),
+                default=0.0,
+            )
+            if cadence >= 130:
+                vigorous.add(minute)
+            elif cadence >= 100:
+                moderate.add(minute)
+
+    # 3) 活动能量换算 MET：MET = 活动 kcal/min * 200 / (3.5 * 体重) + 1
+    weight_row = db.latest_sample("body_mass")
+    weight = (
+        float(weight_row["value"])
+        if weight_row and weight_row.get("value") is not None
+        else None
+    )
+    if weight and weight > 20:
+        energy_rows = db.samples_between(
+            "active_energy", day_start, day_end, limit=20000
+        )
+        for row in energy_rows:
+            value = float(row.get("value") or 0)
+            start = int(row["start_ts"])
+            end = int(row.get("end_ts") or start)
+            duration = end - start
+            if value <= 0 or duration < 60:
+                continue
+            kcal_per_min = value / (duration / 60.0)
+            met = kcal_per_min * 200.0 / (3.5 * weight) + 1.0
+            for minute in _minute_span(day_start, start, end):
+                if met >= 6:
+                    vigorous.add(minute)
+                elif met >= 3:
+                    moderate.add(minute)
+
+    # 4) 训练区间：Apple 的 Exercise 圆环也会统计训练中的片段；
+    #    这里先把整场训练按中等强度兜底，心率/步频/能量更高的分钟仍计为剧烈。
+    for row in db.workout_rows(day_start, limit=1000, until_ts=day_end):
+        start = int(row["start_ts"])
+        duration = float(row.get("duration_s") or 0)
+        if duration <= 0:
+            duration = max(0, int(row["end_ts"]) - start)
+        if duration <= 0:
+            continue
+        for minute in _minute_span(day_start, start, start + int(duration)):
+            moderate.add(minute)
+
+    return float(len(moderate | vigorous))
+
+
 def activity_rings(db: Database, day: str | None = None) -> dict[str, Any]:
     """计算某天的活动圆环。
 
@@ -479,18 +606,33 @@ def activity_rings(db: Database, day: str | None = None) -> dict[str, Any]:
     day_end = day_start + 86400
 
     move = _cumulative_for_day(db, "active_energy", target, day_start)
-    exercise = _cumulative_for_day(db, "exercise_minutes", target, day_start)
+    official_exercise = _cumulative_for_day(
+        db, "exercise_minutes", target, day_start
+    )
     stand = _cumulative_for_day(db, "stand_hours", target, day_start)
     if stand <= 0:
         stand = _cumulative_for_day(db, "stand_minutes", target, day_start) / 60.0
-    if exercise <= 0:
-        workouts = db.workout_rows(day_start, limit=1000)
-        seconds = sum(
-            float(row.get("duration_s") or 0)
-            for row in workouts
-            if day_start <= int(row["start_ts"]) < day_end
-        )
-        exercise = seconds / 60.0
+
+    workouts = db.workout_rows(day_start, limit=1000, until_ts=day_end)
+    workout_minutes = sum(
+        float(row.get("duration_s") or 0)
+        for row in workouts
+        if day_start <= int(row["start_ts"]) < day_end
+    ) / 60.0
+    estimate_minutes = estimate_exercise_minutes(db, day_start, day_end)
+
+    exercise = official_exercise
+    exercise_source = "official" if official_exercise > 0 else "none"
+    exercise_estimated = False
+    if workout_minutes > exercise:
+        exercise = workout_minutes
+        exercise_source = "workout"
+        exercise_estimated = True
+    if estimate_minutes > exercise:
+        exercise = estimate_minutes
+        exercise_source = "estimate"
+        exercise_estimated = True
+
     if stand <= 0:
         stand = estimated_stand_hours(db, day_start, day_end)
 
@@ -500,13 +642,19 @@ def activity_rings(db: Database, day: str | None = None) -> dict[str, Any]:
     summary_date = str(summary.get("date") or "") if summary else ""
     if summary and summary_date == target:
         move = max(move, float(summary.get("move_kcal") or 0))
-        exercise = max(exercise, float(summary.get("exercise_min") or 0))
+        summary_exercise = float(summary.get("exercise_min") or 0)
+        if summary_exercise > exercise:
+            exercise = summary_exercise
+            exercise_source = "summary"
+            exercise_estimated = False
         stand = max(stand, float(summary.get("stand_hours") or 0))
 
     goals = summary or {}
     return {
         "move": move,
         "exercise": exercise,
+        "exercise_estimated": exercise_estimated,
+        "exercise_source": exercise_source,
         "stand": stand,
         "move_goal": float(goals.get("move_goal_kcal") or 0),
         "exercise_goal": float(goals.get("exercise_goal_min") or 0),

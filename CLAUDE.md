@@ -29,7 +29,8 @@ uv run python -m pulsebridge --minimized --port 9000
 - `db.py` 的 `fingerprint` 唯一索引用于跨通道去重（PulsHealth UUID 与 Apple 导出无 UUID 的同一数据）；
   启动时会把旧类型（walkingspeed、activity_4 等）规范化为新名称并重建指纹。
 - UI：`ui/pages.py` 的 MetricsPage（指标库）、SleepPage（Hypnogram）、Dashboard 活动圆环；
-  `ui/charts.py` 的 RingMetric / Hypnogram / SleepStagesChart。
+  `ui/charts.py` 的 RingMetric / Hypnogram / SleepStagesChart；
+  `ui/floating.py` 的可选桌面悬浮球（悬停卡片、动态表情、位置记忆）。
 - `ingest.py`：把快捷指令 JSON 归一化为样本/运动。没有 UUID 时用内容指纹生成稳定 UUID；
   运动去重指纹不包含来源（同一场训练可能来自 iPhone 与 Watch）。
 - `db.py`：WAL SQLite，单连接 + `RLock`；`samples.uuid` 唯一索引实现幂等去重；
@@ -50,6 +51,7 @@ uv run python -m pulsebridge --minimized --port 9000
 - 不要将端口暴露到公网；Token 是唯一写入鉴权。
 - AI 周报默认不联网；用户自填的模型 API Key 只存本机 `config.json`，不内置、不写日志；
   调用模型时只发送聚合统计，不发送原始样本。
+- 悬浮球默认关闭，开启后只读本地 SQLite；位置存 `floating_x/floating_y`，不联网。
 - 中文文案与格式化统一走 `util.py` 的辅助函数。
 
 ## 测试注意
