@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 
 APP_NAME = "PulseBridge"
-APP_VERSION = "0.1.0"
+APP_VERSION = "2.0"
 DEFAULT_PORT = 8765
 
 DEFAULTS: dict[str, Any] = {
@@ -25,6 +25,13 @@ DEFAULTS: dict[str, Any] = {
     "close_to_tray": True,
     "theme": "dark",
     "retention_days": 0,
+    "import_reminder_enabled": False,
+    "import_reminder_frequency": "monthly",
+    "import_reminder_weekday": 0,
+    "import_reminder_day": 1,
+    "import_reminder_time": "09:00",
+    "import_reminder_last_shown": "",
+    "last_health_import_ts": 0,
 }
 
 

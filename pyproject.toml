@@ -1,6 +1,6 @@
 [project]
 name = "pulsebridge"
-version = "0.1.0"
+version = "2.0"
 description = "本地优先的 Apple 健康数据看板（Windows 桌面端）"
 readme = "README.md"
 license = "MIT"

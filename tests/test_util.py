@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 
 from pulsebridge.util import (
     display_activity,
@@ -24,6 +24,12 @@ def test_parse_localized_chinese_date() -> None:
 def test_parse_epoch_seconds_and_milliseconds() -> None:
     assert parse_timestamp(1794496768) == 1794496768
     assert parse_timestamp(1794496768000) == 1794496768
+
+
+def test_parse_apple_health_export_date() -> None:
+    utc_midnight = int(datetime(2024, 1, 1, 0, 0, tzinfo=timezone.utc).timestamp())
+    assert parse_timestamp("2024-01-01 08:00:00 +0800") == utc_midnight
+    assert parse_timestamp("2024-01-01 00:00:00 +0000") == utc_midnight
 
 
 def test_healthkit_workout_activity_numbers() -> None:

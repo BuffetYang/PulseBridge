@@ -21,6 +21,10 @@ uv run python -m pulsebridge --minimized --port 9000
 - `puls.py`：PulsHealth Puls Sync Protocol v1 接收端；gzip NDJSON，按 header 行数解析，
   转换 quantity/category(睡眠)/workout，UUID 幂等；路线/序列/聚合/活动圆环/Profile 行忽略。
   可用官方 fixtures 验证：`docs/protocol/fixtures/`（PulsHealth 仓库）。
+- `health_export.py`：流式导入 Apple Health `export.zip` / `export.xml`（iterparse + 分批写入，
+  支持取消/进度）；记录与运动按内容指纹跨通道去重。
+- `reminders.py`：每周几/每月几号的导入提醒计算；`MainWindow._check_import_reminder` 通过托盘通知。
+- `db.py` 的 `fingerprint` 唯一索引用于跨通道去重（PulsHealth UUID 与 Apple 导出无 UUID 的同一数据）。
 - `ingest.py`：把快捷指令 JSON 归一化为样本/运动。没有 UUID 时用内容指纹生成稳定 UUID；
   运动去重指纹不包含来源（同一场训练可能来自 iPhone 与 Watch）。
 - `db.py`：WAL SQLite，单连接 + `RLock`；`samples.uuid` 唯一索引实现幂等去重。
@@ -34,6 +38,7 @@ uv run python -m pulsebridge --minimized --port 9000
 - HealthKit 无公开云端 API，Windows 无法直接读取；免费方案：PulsHealth App（自动同步，推荐）
   或 iPhone 快捷指令（系统自带，需手工配置）。
 - PulsHealth 免费版：自动同步最多 5 类、最近 30 天；局域网 HTTP 可用；后台调度由 iOS 决定。
+- 全量/其他类型：Apple Health 导出导入（`export.zip`），手动 + 周/月提醒；跨通道按内容指纹去重。
 - iOS 自动化没有「每小时」触发器，只能 24 条定点自动化或 Wi-Fi/充电触发；
   快捷指令每次拉最近 2 天，服务端去重，因此缺失触发不会丢数据。
 - 不要将端口暴露到公网；Token 是唯一写入鉴权。

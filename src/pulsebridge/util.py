@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import math
 import re
 import socket
@@ -23,6 +24,9 @@ _DATE_FORMATS = (
     "%Y年%m月%d日 %H:%M",
     "%Y年%m月%d日",
     "%Y/%m/%d %H:%M",
+    "%Y-%m-%d %H:%M:%S %z",
+    "%Y-%m-%d %H:%M:%S%z",
+    "%Y-%m-%d %H:%M:%S.%f %z",
 )
 
 
@@ -272,7 +276,7 @@ _WORKOUT_ALIASES: dict[str, str] = {
     "武术": "martial_arts",
     "mindandbody": "mind_and_body",
     "racquetball": "racquetball",
-    "壁球": "racquetball",
+    "美式壁球": "racquetball",
     "rugby": "rugby",
     "橄榄球": "rugby",
     "sailing": "sailing",
@@ -417,6 +421,14 @@ _SLEEP_STAGE_ALIASES = {
     "rem": "rem",
     "快速动眼": "rem",
     "快速动眼睡眠": "rem",
+    # Apple Health 导出 XML 中的枚举字符串
+    "hkcategoryvaluesleepanalysisinbed": "in_bed",
+    "hkcategoryvaluesleepanalysisasleep": "asleep_unspecified",
+    "hkcategoryvaluesleepanalysisasleepunspecified": "asleep_unspecified",
+    "hkcategoryvaluesleepanalysisawake": "awake",
+    "hkcategoryvaluesleepanalysisasleepcore": "core",
+    "hkcategoryvaluesleepanalysisasleepdeep": "deep",
+    "hkcategoryvaluesleepanalysisasleeprem": "rem",
     # 旧版数值编码
     "0": "in_bed",
     "1": "asleep_unspecified",
@@ -572,6 +584,41 @@ def app_base_url(port: int, ip: str | None = None) -> str:
     return f"http://{ip or primary_lan_ip()}:{port}"
 
 
+def sample_fingerprint(
+    type_: str,
+    start_ts: int,
+    end_ts: int,
+    value: float | None,
+    value_text: str | None,
+    unit: str | None,
+) -> str:
+    """跨通道去重的内容指纹（不含来源，兼容 PulsHealth 与 Apple 导出）。"""
+    if value is None:
+        value_part = ""
+    else:
+        try:
+            value_part = f"{float(value):.6g}"
+        except (TypeError, ValueError):
+            value_part = str(value)
+    raw = "|".join(
+        (
+            str(type_ or ""),
+            str(int(start_ts)),
+            str(int(end_ts)),
+            value_part,
+            str(value_text or "").strip().lower(),
+            str(unit or "").strip().lower(),
+        )
+    )
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()
+
+
+def workout_fingerprint(activity_type: str, start_ts: int, end_ts: int) -> str:
+    """同一场训练可能来自多个通道，按类型 + 起止时间识别。"""
+    raw = f"workout|{str(activity_type or '')}|{int(start_ts)}|{int(end_ts)}"
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()
+
+
 def display_activity(activity_type: str) -> str:
     return {
         "running": "跑步",
@@ -634,7 +681,7 @@ def display_activity(activity_type: str) -> str:
         "handball": "手球",
         "hockey": "冰球",
         "lacrosse": "长曲棍球",
-        "racquetball": "壁球",
+        "racquetball": "美式壁球",
         "rugby": "橄榄球",
         "sailing": "帆船",
         "softball": "垒球",

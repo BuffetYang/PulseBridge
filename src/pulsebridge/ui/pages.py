@@ -3,12 +3,23 @@
 from __future__ import annotations
 
 import json
+import threading
 import urllib.request
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
-from PySide6.QtCore import QDateTime, QEvent, QSize, Qt, QTimer, QUrl
+from PySide6.QtCore import (
+    QDateTime,
+    QEvent,
+    QObject,
+    QSize,
+    Qt,
+    QTime,
+    QTimer,
+    QUrl,
+    Signal,
+)
 from PySide6.QtGui import QDesktopServices, QIntValidator, QPixmap
 from PySide6.QtWidgets import (
     QButtonGroup,
@@ -20,10 +31,12 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMessageBox,
+    QProgressDialog,
     QPushButton,
     QScrollArea,
     QStackedWidget,
     QTextBrowser,
+    QTimeEdit,
     QVBoxLayout,
     QWidget,
 )
@@ -33,6 +46,8 @@ from ..config import APP_NAME, APP_VERSION, Config
 from ..db import Database
 from ..firewall import add_firewall_rule_elevated
 from ..guide import build_guide_html, build_puls_guide_html, shortcut_payload_template
+from ..health_export import import_health_export
+from ..reminders import due_occurrence, next_for_config
 from ..server import ServerController
 from ..util import (
     activity_emoji,
@@ -1277,6 +1292,30 @@ class AiPage(QWidget):
 # 设置
 # ---------------------------------------------------------------------------
 
+class _HealthImportWorker(QObject):
+    progress = Signal(int, int, int, int)
+    finished = Signal(dict)
+    failed = Signal(str)
+
+    def __init__(self, path: Path, db: Database, stop_event: threading.Event) -> None:
+        super().__init__()
+        self.path = path
+        self.db = db
+        self.stop_event = stop_event
+
+    def run(self) -> None:
+        try:
+            summary = import_health_export(
+                self.path,
+                self.db,
+                progress=lambda *args: self.progress.emit(*args),
+                stop_event=self.stop_event,
+            )
+            self.finished.emit(summary.as_dict())
+        except Exception as exc:  # noqa: BLE001
+            self.failed.emit(str(exc))
+
+
 class SettingsPage(QWidget):
     def __init__(
         self,
@@ -1292,11 +1331,15 @@ class SettingsPage(QWidget):
         self.controller = controller
         self.refresh_all = refresh_all
         self._loading = False
+        self._import_thread: threading.Thread | None = None
+        self._import_worker: _HealthImportWorker | None = None
+        self._import_dialog: QProgressDialog | None = None
+        self._import_stop: threading.Event | None = None
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         layout = _make_scroll(outer)
-        layout.addLayout(_header("设置", "启动方式、接收端口与本地数据"))
+        layout.addLayout(_header("设置", "启动方式、接收端口、数据导入与提醒"))
 
         # 通用
         general = Card()
@@ -1404,12 +1447,107 @@ class SettingsPage(QWidget):
         data_card.body.addLayout(buttons)
         layout.addWidget(data_card)
 
+        # Apple Health 导出导入 + 提醒
+        import_card = Card()
+        import_card.body.addLayout(
+            card_header(
+                "Apple Health 导出导入",
+                "全量历史 · 不受 PulsHealth 5 类限制",
+            )
+        )
+        import_hint = QLabel(
+            "iPhone 健康 App → 右上角头像 → 导出所有健康数据 → 把 export.zip 传到电脑，"
+            "在这里导入。所有指标和全部历史都会合并进本地数据库；重复导入会自动去重。"
+        )
+        import_hint.setWordWrap(True)
+        import_hint.setObjectName("subtle")
+        import_card.body.addWidget(import_hint)
+
+        import_row = QHBoxLayout()
+        import_row.setSpacing(12)
+        self.import_button = QPushButton("选择 export.zip 导入")
+        self.import_button.setObjectName("primaryButton")
+        self.import_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.import_button.clicked.connect(self._start_health_import)
+        import_row.addWidget(self.import_button)
+        self.import_last_label = QLabel("上次导入：从未")
+        self.import_last_label.setObjectName("subtle")
+        import_row.addWidget(self.import_last_label, 1)
+        import_card.body.addLayout(import_row)
+
+        reminder_header = QHBoxLayout()
+        reminder_title = QLabel("定时导入提醒")
+        reminder_title.setObjectName("subtle")
+        reminder_header.addWidget(reminder_title)
+        reminder_header.addStretch(1)
+        self.reminder_toggle = ToggleSwitch()
+        reminder_header.addWidget(self.reminder_toggle)
+        import_card.body.addLayout(reminder_header)
+
+        schedule_row = QHBoxLayout()
+        schedule_row.setSpacing(10)
+        self.reminder_freq = QComboBox()
+        self.reminder_freq.addItem("每周", "weekly")
+        self.reminder_freq.addItem("每月", "monthly")
+        self.reminder_freq.setFixedWidth(92)
+        schedule_row.addWidget(self.reminder_freq)
+
+        self.reminder_weekday = QComboBox()
+        for index, label in enumerate(("周一", "周二", "周三", "周四", "周五", "周六", "周日")):
+            self.reminder_weekday.addItem(label, index)
+        self.reminder_weekday.setFixedWidth(92)
+        schedule_row.addWidget(self.reminder_weekday)
+
+        self.reminder_day = QComboBox()
+        for day in range(1, 29):
+            self.reminder_day.addItem(f"{day} 号", day)
+        self.reminder_day.setFixedWidth(92)
+        schedule_row.addWidget(self.reminder_day)
+
+        self.reminder_time = QTimeEdit()
+        self.reminder_time.setDisplayFormat("HH:mm")
+        self.reminder_time.setFixedWidth(92)
+        schedule_row.addWidget(self.reminder_time)
+        schedule_row.addStretch(1)
+        import_card.body.addLayout(schedule_row)
+
+        self.reminder_next_label = QLabel("提醒未开启")
+        self.reminder_next_label.setObjectName("subtle")
+        import_card.body.addWidget(self.reminder_next_label)
+        self.import_due_label = QLabel("")
+        self.import_due_label.setObjectName("warn")
+        self.import_due_label.setWordWrap(True)
+        self.import_due_label.hide()
+        import_card.body.addWidget(self.import_due_label)
+
+        reminder_note = QLabel(
+            "提醒只在 PulseBridge 运行时触发（可开机自启 / 最小化到托盘）；"
+            "如果到点时电脑关机，下次启动后会补提醒。"
+        )
+        reminder_note.setWordWrap(True)
+        reminder_note.setObjectName("subtle")
+        import_card.body.addWidget(reminder_note)
+
+        self.reminder_toggle.toggled.connect(lambda _checked: self._save_reminder_settings())
+        self.reminder_freq.currentIndexChanged.connect(
+            lambda _index: self._save_reminder_settings()
+        )
+        self.reminder_weekday.currentIndexChanged.connect(
+            lambda _index: self._save_reminder_settings()
+        )
+        self.reminder_day.currentIndexChanged.connect(
+            lambda _index: self._save_reminder_settings()
+        )
+        self.reminder_time.timeChanged.connect(
+            lambda _value: self._save_reminder_settings()
+        )
+        layout.addWidget(import_card)
+
         # 关于
         about = Card()
         about.body.addLayout(card_header(f"{APP_NAME} v{APP_VERSION}", "本地优先的 Apple 健康数据看板"))
         about_text = QLabel(
-            "数据来源：iPhone 快捷指令读取 HealthKit（心率、步数、能量、睡眠、运动等），"
-            "通过同一 Wi-Fi POST 到本程序。\n\n"
+            "数据来源：PulsHealth 自动同步、Apple Health 导出导入、iOS 快捷指令。\n\n"
             "隐私：所有数据保存在本机，Token 仅用于局域网写入鉴权。请勿将端口暴露到公网。"
         )
         about_text.setWordWrap(True)
@@ -1425,7 +1563,182 @@ class SettingsPage(QWidget):
         self.startup_toggle.setChecked(startup.is_launch_at_startup())
         self.minimized_toggle.setChecked(bool(self.config.get("start_minimized")))
         self.tray_toggle.setChecked(bool(self.config.get("close_to_tray")))
+        self._load_import_settings()
         self._loading = False
+
+    def _load_import_settings(self) -> None:
+        was_loading = self._loading
+        self._loading = True
+        self.reminder_toggle.setChecked(
+            bool(self.config.get("import_reminder_enabled"))
+        )
+        frequency = str(self.config.get("import_reminder_frequency") or "monthly")
+        index = self.reminder_freq.findData(frequency)
+        self.reminder_freq.setCurrentIndex(max(0, index))
+        weekday = int(self.config.get("import_reminder_weekday") or 0)
+        index = self.reminder_weekday.findData(weekday)
+        self.reminder_weekday.setCurrentIndex(max(0, index))
+        day = int(self.config.get("import_reminder_day") or 1)
+        index = self.reminder_day.findData(day)
+        self.reminder_day.setCurrentIndex(max(0, index))
+        clock = QTime.fromString(
+            str(self.config.get("import_reminder_time") or "09:00"), "HH:mm"
+        )
+        self.reminder_time.setTime(clock if clock.isValid() else QTime(9, 0))
+        self._loading = was_loading
+        self._update_reminder_visibility()
+        self._refresh_import_labels()
+
+    def _update_reminder_visibility(self) -> None:
+        enabled = self.reminder_toggle.isChecked()
+        for control in (
+            self.reminder_freq,
+            self.reminder_weekday,
+            self.reminder_day,
+            self.reminder_time,
+        ):
+            control.setEnabled(enabled)
+        weekly = self.reminder_freq.currentData() == "weekly"
+        self.reminder_weekday.setVisible(weekly)
+        self.reminder_day.setVisible(not weekly)
+
+    def _save_reminder_settings(self) -> None:
+        if self._loading:
+            return
+        self.config.set(
+            "import_reminder_enabled", self.reminder_toggle.isChecked()
+        )
+        self.config.set(
+            "import_reminder_frequency", self.reminder_freq.currentData() or "monthly"
+        )
+        self.config.set(
+            "import_reminder_weekday", int(self.reminder_weekday.currentData() or 0)
+        )
+        self.config.set("import_reminder_day", int(self.reminder_day.currentData() or 1))
+        self.config.set(
+            "import_reminder_time", self.reminder_time.time().toString("HH:mm")
+        )
+        self._update_reminder_visibility()
+        self._refresh_import_labels()
+
+    def refresh_import_status(self) -> None:
+        self._refresh_import_labels()
+
+    def _refresh_import_labels(self) -> None:
+        last = int(self.config.get("last_health_import_ts") or 0)
+        self.import_last_label.setText(
+            f"上次导入：{humanize_ago(last) if last else '从未'}"
+        )
+        if not bool(self.config.get("import_reminder_enabled")):
+            self.reminder_next_label.setText("提醒未开启")
+            self.import_due_label.hide()
+            return
+        now = datetime.now()
+        upcoming = next_for_config(self.config, now)
+        self.reminder_next_label.setText(
+            f"下次提醒：{upcoming:%Y-%m-%d %H:%M}" if upcoming else "下次提醒：--"
+        )
+        due = due_occurrence(self.config, now)
+        if due:
+            self.import_due_label.setText(
+                f"已到导入时间（{due:%Y-%m-%d %H:%M}），请选择最新的 export.zip"
+            )
+            self.import_due_label.show()
+        else:
+            self.import_due_label.hide()
+
+    # ------------------------------------------------------------------
+    def _start_health_import(self) -> None:
+        if self._import_thread is not None and self._import_thread.is_alive():
+            return
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "选择 Apple Health 导出文件",
+            str(Path.home()),
+            "Apple Health 导出 (*.zip *.xml);;所有文件 (*)",
+        )
+        if not path:
+            return
+
+        self._import_stop = threading.Event()
+        worker = _HealthImportWorker(Path(path), self.db, self._import_stop)
+        dialog = QProgressDialog("正在读取 export.xml…", "取消", 0, 0, self)
+        dialog.setWindowTitle("导入 Apple Health")
+        dialog.setWindowModality(Qt.WindowModality.WindowModal)
+        dialog.setMinimumDuration(0)
+        dialog.setAutoClose(False)
+        dialog.setAutoReset(False)
+        dialog.canceled.connect(self._cancel_health_import)
+        dialog.show()
+        self._import_dialog = dialog
+        self._import_worker = worker
+        self.import_button.setEnabled(False)
+
+        worker.progress.connect(self._on_import_progress)
+        worker.finished.connect(self._on_import_finished)
+        worker.failed.connect(self._on_import_failed)
+
+        thread = threading.Thread(target=worker.run, daemon=True)
+        self._import_thread = thread
+        thread.start()
+
+    def _cancel_health_import(self) -> None:
+        if self._import_stop is not None:
+            self._import_stop.set()
+        if self._import_dialog is not None:
+            self._import_dialog.setLabelText("正在停止…")
+            self._import_dialog.setCancelButton(None)
+
+    def _on_import_progress(
+        self, records: int, workouts: int, samples_new: int, workouts_new: int
+    ) -> None:
+        if self._import_dialog is not None:
+            self._import_dialog.setLabelText(
+                f"已处理 {records:,} 条记录 / {workouts:,} 个训练\n"
+                f"新增样本 {samples_new:,} · 新增运动 {workouts_new:,}"
+            )
+
+    def _close_import_dialog(self) -> None:
+        if self._import_dialog is not None:
+            self._import_dialog.close()
+            self._import_dialog = None
+        self.import_button.setEnabled(True)
+
+    def _on_import_finished(self, summary: dict) -> None:
+        self._close_import_dialog()
+        self._import_thread = None
+        self._import_worker = None
+        if summary.get("cancelled"):
+            QMessageBox.information(
+                self,
+                "导入已取消",
+                f"已取消。已处理 {summary.get('records', 0):,} 条记录，"
+                f"新增样本 {summary.get('samples_new', 0):,}，"
+                f"新增运动 {summary.get('workouts_new', 0):,}。",
+            )
+        else:
+            self.config.set(
+                "last_health_import_ts", int(datetime.now().timestamp())
+            )
+            self.config.set("import_reminder_last_shown", "")
+            self.refresh_all()
+            QMessageBox.information(
+                self,
+                "导入完成",
+                f"处理记录：{summary.get('records', 0):,} 条\n"
+                f"新增样本：{summary.get('samples_new', 0):,} 条"
+                f"（重复 {summary.get('samples_dupe', 0):,}）\n"
+                f"新增运动：{summary.get('workouts_new', 0):,} 条"
+                f"（重复 {summary.get('workouts_dupe', 0):,}）\n"
+                f"耗时：{summary.get('duration_s', 0)} 秒",
+            )
+        self._refresh_import_labels()
+
+    def _on_import_failed(self, message: str) -> None:
+        self._close_import_dialog()
+        self._import_thread = None
+        self._import_worker = None
+        QMessageBox.warning(self, "导入失败", message)
 
     def _on_startup_changed(self, enabled: bool) -> None:
         if self._loading:

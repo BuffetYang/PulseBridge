@@ -170,3 +170,32 @@ def test_legacy_activity_type_is_normalized_on_open(tmp_path) -> None:
     rows = reopened.workout_rows(0)
     assert rows and rows[0]["activity_type"] == "badminton"
     reopened.close()
+
+
+def test_content_fingerprint_dedupes_across_channels(tmp_path) -> None:
+    db = Database(tmp_path / "test.db")
+    base = int(time.time()) - 3600
+    first = _sample("puls-uuid", "heart_rate", base, 72.0, "Apple Watch", unit="count/min")
+    second = _sample("apple-hash", "heart_rate", base, 72.0, "iPhone", unit="count/min")
+    assert db.insert_samples([first]) == (1, 0)
+    assert db.insert_samples([second]) == (0, 1)
+    assert db.stats()["samples"] == 1
+
+    workout_a = {
+        "uuid": "puls-workout",
+        "activity_type": "running",
+        "start_ts": base,
+        "end_ts": base + 1800,
+        "duration_s": 1800,
+        "distance_m": 5000,
+        "energy_kcal": 300,
+        "avg_hr": 150,
+        "max_hr": 170,
+        "source": "Apple Watch",
+        "metadata": None,
+    }
+    workout_b = dict(workout_a, uuid="apple-workout", source="iPhone")
+    assert db.insert_workouts([workout_a]) == (1, 0)
+    assert db.insert_workouts([workout_b]) == (0, 1)
+    assert db.stats()["workouts"] == 1
+    db.close()

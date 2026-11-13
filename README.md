@@ -56,6 +56,7 @@ PulseBridge 让你的 iPhone / Apple Watch 健康与运动数据自动出现在 
 - **运动记录**：跑步、骑行、力量训练等，含时长、距离、消耗、平均心率。
 - **同步与配对**：局域网地址、Token、二维码、最近同步日志、已接收指标统计。
 - **内置 PulsHealth 接收协议**：免费 App 自动后台同步 5 类数据，零快捷指令配置。
+- **Apple Health 全量导入**：导入 `export.zip` 获取全部指标与历史，支持每周/每月提醒。
 - **系统托盘**：关闭窗口不退出，后台持续接收；可设置开机自启。
 - **AI 洞察（预留）**：数据摘要与 JSON 导出，后续接入大模型分析。
 
@@ -108,6 +109,17 @@ PulsHealth 是开源、免费的 iPhone App。免费版支持**自动后台同�
 - 免费版 30 天 / 5 类；Pro 可选，本方案不需要。
 
 详细步骤与排错：[docs/pulshealth.md](docs/pulshealth.md)。
+
+### 全量历史：导入 Apple Health 导出
+
+PulsHealth 免费版只有 5 类 / 30 天。需要其他指标或完整历史时：
+
+1. iPhone 健康 App → 头像 → **导出所有健康数据**，把 `export.zip` 传到电脑。
+2. PulseBridge → **设置 → Apple Health 导出导入** → 选择 zip。
+3. 程序会流式解析并合并进本地数据库；跨通道重复数据按内容指纹去重。
+4. 可设置**每周几 / 每月几号**的导入提醒（系统托盘通知）。
+
+详见 [docs/health-export-import.md](docs/health-export-import.md)。
 
 ### 或者：使用系统快捷指令
 
@@ -178,6 +190,8 @@ src/pulsebridge/
 ├── server.py         # 内置 HTTP 服务 + 鉴权 + 状态页 + PulsHealth 端点
 ├── ingest.py         # 快捷指令 JSON 归一化（原生格式 / Health Auto Export 风格）
 ├── puls.py           # PulsHealth Puls Sync Protocol v1 接收与转换
+├── health_export.py  # Apple Health export.zip / export.xml 流式导入
+├── reminders.py      # 每周/每月导入提醒的计算
 ├── db.py             # SQLite 存储与查询
 ├── analytics.py      # 日汇总、睡眠夜间聚合、心率序列
 ├── config.py         # 配置与 Token
@@ -218,3 +232,5 @@ uv run pytest -q
 ## License
 
 MIT
+
+版本历史见 [CHANGELOG.md](CHANGELOG.md)。

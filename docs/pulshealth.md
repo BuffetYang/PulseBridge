@@ -124,3 +124,5 @@ PulseBridge 按样本 UUID 幂等入库，重复批次不会重复计数。
 - **PulsHealth**：推荐，安装 App 后自动同步。
 - **快捷指令**：完全自带、无需安装第三方 App，但需要手工搭建动作。
   见 [iphone-shortcuts.md](iphone-shortcuts.md)。
+- **Apple Health 导出导入**：免费、全量类型/全部历史，手动 + 周/月提醒。
+  见 [health-export-import.md](health-export-import.md)。跨通道重复数据会按内容指纹去重。

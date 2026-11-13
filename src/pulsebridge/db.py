@@ -13,7 +13,7 @@ import time
 from pathlib import Path
 from typing import Any, Iterable
 
-from .util import normalize_workout_type
+from .util import normalize_workout_type, sample_fingerprint, workout_fingerprint
 
 SCHEMA_VERSION = 1
 
@@ -21,6 +21,7 @@ _SCHEMA = """
 CREATE TABLE IF NOT EXISTS samples (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     uuid        TEXT NOT NULL UNIQUE,
+    fingerprint TEXT,
     type        TEXT NOT NULL,
     start_ts    INTEGER NOT NULL,
     end_ts      INTEGER NOT NULL,
@@ -38,6 +39,7 @@ CREATE INDEX IF NOT EXISTS idx_samples_start ON samples(start_ts);
 CREATE TABLE IF NOT EXISTS workouts (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     uuid          TEXT NOT NULL UNIQUE,
+    fingerprint   TEXT,
     activity_type TEXT NOT NULL,
     start_ts      INTEGER NOT NULL,
     end_ts        INTEGER NOT NULL,
@@ -94,7 +96,89 @@ class Database:
                         "UPDATE workouts SET activity_type = ? WHERE activity_type = ?",
                         (normalized, current),
                     )
+            self._ensure_fingerprint_schema()
             self._conn.commit()
+
+    def _ensure_fingerprint_schema(self) -> None:
+        """为旧数据库补 fingerprint 列、回填、去重并建立唯一索引。"""
+        sample_cols = {
+            row[1] for row in self._conn.execute("PRAGMA table_info(samples)")
+        }
+        if "fingerprint" not in sample_cols:
+            self._conn.execute("ALTER TABLE samples ADD COLUMN fingerprint TEXT")
+        workout_cols = {
+            row[1] for row in self._conn.execute("PRAGMA table_info(workouts)")
+        }
+        if "fingerprint" not in workout_cols:
+            self._conn.execute("ALTER TABLE workouts ADD COLUMN fingerprint TEXT")
+
+        samples = self._conn.execute(
+            "SELECT id, type, start_ts, end_ts, value, value_text, unit "
+            "FROM samples WHERE fingerprint IS NULL"
+        ).fetchall()
+        sample_needs_dedupe = bool(samples)
+        for row in samples:
+            self._conn.execute(
+                "UPDATE samples SET fingerprint = ? WHERE id = ?",
+                (
+                    sample_fingerprint(
+                        row["type"],
+                        row["start_ts"],
+                        row["end_ts"],
+                        row["value"],
+                        row["value_text"],
+                        row["unit"],
+                    ),
+                    row["id"],
+                ),
+            )
+
+        workouts = self._conn.execute(
+            "SELECT id, activity_type, start_ts, end_ts "
+            "FROM workouts WHERE fingerprint IS NULL"
+        ).fetchall()
+        workout_needs_dedupe = bool(workouts)
+        for row in workouts:
+            self._conn.execute(
+                "UPDATE workouts SET fingerprint = ? WHERE id = ?",
+                (
+                    workout_fingerprint(
+                        row["activity_type"], row["start_ts"], row["end_ts"]
+                    ),
+                    row["id"],
+                ),
+            )
+
+        sample_indexes = {
+            row[1] for row in self._conn.execute("PRAGMA index_list(samples)")
+        }
+        workout_indexes = {
+            row[1] for row in self._conn.execute("PRAGMA index_list(workouts)")
+        }
+        if "idx_samples_fingerprint" not in sample_indexes:
+            sample_needs_dedupe = True
+        if "idx_workouts_fingerprint" not in workout_indexes:
+            workout_needs_dedupe = True
+
+        # 旧数据库可能已有跨通道重复；保留最早的一条
+        if sample_needs_dedupe:
+            self._conn.execute(
+                "DELETE FROM samples WHERE fingerprint IS NOT NULL AND id NOT IN "
+                "(SELECT MIN(id) FROM samples WHERE fingerprint IS NOT NULL GROUP BY fingerprint)"
+            )
+        if workout_needs_dedupe:
+            self._conn.execute(
+                "DELETE FROM workouts WHERE fingerprint IS NOT NULL AND id NOT IN "
+                "(SELECT MIN(id) FROM workouts WHERE fingerprint IS NOT NULL GROUP BY fingerprint)"
+            )
+        self._conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_samples_fingerprint "
+            "ON samples(fingerprint)"
+        )
+        self._conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_workouts_fingerprint "
+            "ON workouts(fingerprint)"
+        )
 
     def close(self) -> None:
         with self._lock:
@@ -107,70 +191,91 @@ class Database:
         rows = list(samples)
         if not rows:
             return 0, 0
-        inserted = 0
         now = int(time.time())
-        with self._lock, self._conn:
+
+        def values() -> Iterable[tuple[Any, ...]]:
             for row in rows:
-                cur = self._conn.execute(
-                    """
-                    INSERT OR IGNORE INTO samples
-                        (uuid, type, start_ts, end_ts, value, value_text, unit,
-                         source, device, metadata, received_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        row["uuid"],
-                        row["type"],
-                        int(row["start_ts"]),
-                        int(row["end_ts"]),
-                        row.get("value"),
-                        row.get("value_text"),
-                        row.get("unit"),
-                        row.get("source"),
-                        row.get("device"),
-                        json.dumps(row["metadata"], ensure_ascii=False)
-                        if row.get("metadata")
-                        else None,
-                        int(row.get("received_at") or now),
-                    ),
+                fingerprint = row.get("fingerprint") or sample_fingerprint(
+                    row["type"],
+                    row["start_ts"],
+                    row["end_ts"],
+                    row.get("value"),
+                    row.get("value_text"),
+                    row.get("unit"),
                 )
-                inserted += cur.rowcount
+                yield (
+                    row["uuid"],
+                    fingerprint,
+                    row["type"],
+                    int(row["start_ts"]),
+                    int(row["end_ts"]),
+                    row.get("value"),
+                    row.get("value_text"),
+                    row.get("unit"),
+                    row.get("source"),
+                    row.get("device"),
+                    json.dumps(row["metadata"], ensure_ascii=False)
+                    if row.get("metadata")
+                    else None,
+                    int(row.get("received_at") or now),
+                )
+
+        with self._lock, self._conn:
+            before = self._conn.total_changes
+            self._conn.executemany(
+                """
+                INSERT OR IGNORE INTO samples
+                    (uuid, fingerprint, type, start_ts, end_ts, value, value_text,
+                     unit, source, device, metadata, received_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                values(),
+            )
+            inserted = self._conn.total_changes - before
         return inserted, len(rows) - inserted
 
     def insert_workouts(self, workouts: Iterable[dict[str, Any]]) -> tuple[int, int]:
         rows = list(workouts)
         if not rows:
             return 0, 0
-        inserted = 0
         now = int(time.time())
-        with self._lock, self._conn:
+
+        def values() -> Iterable[tuple[Any, ...]]:
             for row in rows:
-                cur = self._conn.execute(
-                    """
-                    INSERT OR IGNORE INTO workouts
-                        (uuid, activity_type, start_ts, end_ts, duration_s,
-                         distance_m, energy_kcal, avg_hr, max_hr, source,
-                         metadata, received_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        row["uuid"],
-                        row["activity_type"],
-                        int(row["start_ts"]),
-                        int(row["end_ts"]),
-                        row.get("duration_s"),
-                        row.get("distance_m"),
-                        row.get("energy_kcal"),
-                        row.get("avg_hr"),
-                        row.get("max_hr"),
-                        row.get("source"),
-                        json.dumps(row["metadata"], ensure_ascii=False)
-                        if row.get("metadata")
-                        else None,
-                        int(row.get("received_at") or now),
-                    ),
+                fingerprint = row.get("fingerprint") or workout_fingerprint(
+                    row["activity_type"], row["start_ts"], row["end_ts"]
                 )
-                inserted += cur.rowcount
+                yield (
+                    row["uuid"],
+                    fingerprint,
+                    row["activity_type"],
+                    int(row["start_ts"]),
+                    int(row["end_ts"]),
+                    row.get("duration_s"),
+                    row.get("distance_m"),
+                    row.get("energy_kcal"),
+                    row.get("avg_hr"),
+                    row.get("max_hr"),
+                    row.get("source"),
+                    json.dumps(row["metadata"], ensure_ascii=False)
+                    if row.get("metadata")
+                    else None,
+                    int(row.get("received_at") or now),
+                )
+
+        with self._lock, self._conn:
+            before = self._conn.total_changes
+            self._conn.executemany(
+                """
+                INSERT OR IGNORE INTO workouts
+                    (uuid, fingerprint, activity_type, start_ts, end_ts, duration_s,
+                     distance_m, energy_kcal, avg_hr, max_hr, source, metadata,
+                     received_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                values(),
+            )
+            inserted = self._conn.total_changes - before
         return inserted, len(rows) - inserted
 
     def record_ingest(

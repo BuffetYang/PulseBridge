@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
 from PySide6.QtCore import Qt, QTimer
@@ -24,6 +25,7 @@ from PySide6.QtWidgets import (
 from ..bus import IngestBus
 from ..config import APP_NAME, APP_VERSION, Config
 from ..db import Database
+from ..reminders import due_occurrence
 from ..server import ServerController
 from ..util import humanize_ago, primary_lan_ip
 from .icons import app_icon, brand_pixmap
@@ -125,6 +127,7 @@ class MainWindow(QMainWindow):
         self.timer.timeout.connect(self._tick)
         self.timer.start()
         self._update_sidebar_status()
+        QTimer.singleShot(3000, self._check_import_reminder)
 
     # ------------------------------------------------------------------
     def _build_sidebar(self) -> QFrame:
@@ -261,6 +264,23 @@ class MainWindow(QMainWindow):
             if callable(refresh):
                 refresh()
         self._update_sidebar_status()
+        self._check_import_reminder()
+
+    def _check_import_reminder(self) -> None:
+        occurrence = due_occurrence(self.config, datetime.now())
+        if occurrence is None:
+            return
+        # 只提醒一次；下次提醒要等到下一个周期
+        self.config.set("import_reminder_last_shown", occurrence.isoformat())
+        last = int(self.config.get("last_health_import_ts") or 0)
+        last_text = humanize_ago(last) if last else "从未导入"
+        self.tray.showMessage(
+            APP_NAME,
+            f"该导入 Apple Health 导出了（设置 → 数据）。\n上次导入：{last_text}",
+            QSystemTrayIcon.MessageIcon.Information,
+            6000,
+        )
+        self.settings.refresh_import_status()
 
     def _on_ingested(self, summary: dict[str, Any]) -> None:
         self._update_sidebar_status()
