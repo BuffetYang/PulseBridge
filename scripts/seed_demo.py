@@ -366,6 +366,23 @@ def main() -> int:
     window.show()
     app.processEvents()
 
+    # 先生成一份本地规则周报，避免 AI 页面截图是空的
+    window.navigate(6)
+    for _ in range(3):
+        app.processEvents()
+    window.ai._generate()
+    deadline = time.time() + 20
+    while time.time() < deadline:
+        app.processEvents()
+        if (
+            window.ai._report_thread is None
+            or not window.ai._report_thread.is_alive()
+        ):
+            break
+        time.sleep(0.05)
+    for _ in range(3):
+        app.processEvents()
+
     names = [
         "dashboard",
         "trends",

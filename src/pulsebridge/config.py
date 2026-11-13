@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import os
 import secrets
@@ -13,7 +14,7 @@ from pathlib import Path
 from typing import Any
 
 APP_NAME = "PulseBridge"
-APP_VERSION = "2.1.3"
+APP_VERSION = "2.2.0"
 DEFAULT_PORT = 8765
 
 DEFAULTS: dict[str, Any] = {
@@ -32,6 +33,13 @@ DEFAULTS: dict[str, Any] = {
     "import_reminder_time": "09:00",
     "import_reminder_last_shown": "",
     "last_health_import_ts": 0,
+    "ai_provider": "none",
+    "ai_base_url": "",
+    "ai_api_key": "",
+    "ai_model": "",
+    "ai_timeout": 90,
+    "ai_max_tokens": 4096,
+    "ai_profiles": {},
 }
 
 
@@ -50,7 +58,7 @@ def app_data_dir() -> Path:
 class Config:
     def __init__(self, path: Path | str | None = None) -> None:
         self.path = Path(path) if path else app_data_dir() / "config.json"
-        self._data: dict[str, Any] = dict(DEFAULTS)
+        self._data: dict[str, Any] = copy.deepcopy(DEFAULTS)
         self.load()
 
     def load(self) -> None:
@@ -62,8 +70,12 @@ class Config:
         except (OSError, ValueError):
             raw = {}
         for key in DEFAULTS:
-            if key in raw:
-                self._data[key] = raw[key]
+            if key not in raw:
+                continue
+            value = raw[key]
+            if isinstance(DEFAULTS[key], dict) and not isinstance(value, dict):
+                continue
+            self._data[key] = value
         if not self._data.get("token"):
             self._data["token"] = secrets.token_urlsafe(18)
         self.save()

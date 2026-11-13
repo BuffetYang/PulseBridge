@@ -23,11 +23,14 @@ from PySide6.QtCore import (
 )
 from PySide6.QtGui import QDesktopServices, QIntValidator, QPixmap
 from PySide6.QtWidgets import (
+    QApplication,
     QButtonGroup,
+    QCheckBox,
     QComboBox,
     QDateEdit,
     QDialog,
     QFileDialog,
+    QFormLayout,
     QFrame,
     QGridLayout,
     QHBoxLayout,
@@ -46,6 +49,20 @@ from PySide6.QtWidgets import (
 )
 
 from .. import analytics, startup
+from ..ai import (
+    DEEPSEEK_BASE_URL,
+    DEEPSEEK_MODEL,
+    GLM_BASE_URL,
+    GLM_MODEL,
+    GLM_VISION_MODEL,
+    OLLAMA_BASE_URL,
+    OLLAMA_MODEL,
+    AIConfig,
+    ai_config_from_config,
+    build_weekly_context,
+    generate_report,
+    test_connection,
+)
 from ..config import APP_NAME, APP_VERSION, Config
 from ..db import Database
 from ..firewall import add_firewall_rule_elevated
@@ -1959,79 +1976,487 @@ class SyncPage(QWidget):
 
 
 # ---------------------------------------------------------------------------
-# AI 洞察（预留）
+# AI 健康周报
 # ---------------------------------------------------------------------------
 
+class _AITestWorker(QObject):
+    done = Signal(bool, str)
+
+    def __init__(self, config: AIConfig) -> None:
+        super().__init__()
+        self.config = config
+
+    def run(self) -> None:
+        try:
+            ok, message = test_connection(self.config)
+        except Exception as exc:  # noqa: BLE001
+            ok, message = False, str(exc)
+        self.done.emit(ok, message)
+
+
+class _AIReportWorker(QObject):
+    finished = Signal(dict)
+    failed = Signal(str)
+
+    def __init__(self, db: Database, config: AIConfig, days: int = 7) -> None:
+        super().__init__()
+        self.db = db
+        self.config = config
+        self.days = days
+
+    def run(self) -> None:
+        try:
+            context = build_weekly_context(self.db, days=self.days)
+            content, mode, error = generate_report(self.config, context)
+            self.finished.emit(
+                {
+                    "content": content,
+                    "mode": mode,
+                    "error": error,
+                    "context": context,
+                }
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.failed.emit(str(exc))
+
+
+class _AIModelDialog(QDialog):
+    def __init__(self, config: Config, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.config = config
+        self._test_worker: _AITestWorker | None = None
+        self._test_thread: threading.Thread | None = None
+
+        self.setWindowTitle("AI 模型设置")
+        self.setMinimumWidth(540)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(22, 20, 22, 18)
+        layout.setSpacing(12)
+
+        title = QLabel("配置你自己的模型")
+        title.setObjectName("cardTitle")
+        layout.addWidget(title)
+
+        intro = QLabel(
+            "PulseBridge 不内置任何 API Key。你可以填写 OpenAI 兼容的 API（GLM、DeepSeek、"
+            "OpenAI 等），或使用本地 Ollama；不配置时仍可生成本地规则周报。"
+        )
+        intro.setWordWrap(True)
+        intro.setObjectName("subtle")
+        layout.addWidget(intro)
+
+        form = QFormLayout()
+        form.setHorizontalSpacing(12)
+        form.setVerticalSpacing(10)
+        form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+
+        self.provider_combo = QComboBox()
+        self.provider_combo.addItem("不启用模型（仅本地规则）", "none")
+        self.provider_combo.addItem("OpenAI 兼容 API（GLM / DeepSeek 等）", "openai")
+        self.provider_combo.addItem("本地 Ollama", "ollama")
+        form.addRow("提供方", self.provider_combo)
+
+        self.base_edit = QLineEdit()
+        form.addRow("API 地址", self.base_edit)
+
+        self.key_edit = QLineEdit()
+        self.key_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        form.addRow("API Key", self.key_edit)
+
+        self.model_edit = QLineEdit()
+        form.addRow("模型", self.model_edit)
+        layout.addLayout(form)
+
+        key_tools = QHBoxLayout()
+        key_tools.setSpacing(8)
+        self.show_key = QCheckBox("显示 API Key")
+        self.show_key.toggled.connect(self._toggle_key)
+        key_tools.addWidget(self.show_key)
+        key_tools.addStretch(1)
+        clear_key_button = QPushButton("清除 API Key")
+        clear_key_button.setObjectName("linkButton")
+        clear_key_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        clear_key_button.clicked.connect(self.key_edit.clear)
+        key_tools.addWidget(clear_key_button)
+        layout.addLayout(key_tools)
+
+        preset_row = QHBoxLayout()
+        preset_row.setSpacing(8)
+        glm_button = QPushButton("GLM-4.7-Flash")
+        glm_button.setObjectName("ghostButton")
+        glm_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        glm_button.setToolTip("智谱免费文本模型，推荐用于周报")
+        glm_button.clicked.connect(lambda: self._apply_glm(GLM_MODEL))
+        preset_row.addWidget(glm_button)
+        glm_vision_button = QPushButton("GLM-4.6V-Flash")
+        glm_vision_button.setObjectName("ghostButton")
+        glm_vision_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        glm_vision_button.setToolTip("智谱免费多模态模型；周报只需要文本")
+        glm_vision_button.clicked.connect(
+            lambda: self._apply_glm(GLM_VISION_MODEL)
+        )
+        preset_row.addWidget(glm_vision_button)
+        deepseek_button = QPushButton("DeepSeek")
+        deepseek_button.setObjectName("ghostButton")
+        deepseek_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        deepseek_button.setToolTip("DeepSeek API；需要账户余额")
+        deepseek_button.clicked.connect(self._apply_deepseek)
+        preset_row.addWidget(deepseek_button)
+        ollama_button = QPushButton("Ollama 预设")
+        ollama_button.setObjectName("ghostButton")
+        ollama_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        ollama_button.clicked.connect(self._apply_ollama)
+        preset_row.addWidget(ollama_button)
+        preset_row.addStretch(1)
+        layout.addLayout(preset_row)
+
+        test_row = QHBoxLayout()
+        test_row.setSpacing(10)
+        self.test_button = QPushButton("测试连接")
+        self.test_button.setObjectName("ghostButton")
+        self.test_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.test_button.clicked.connect(self._test_connection)
+        test_row.addWidget(self.test_button)
+        self.test_status = QLabel("")
+        self.test_status.setObjectName("subtle")
+        self.test_status.setWordWrap(True)
+        self.test_status.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        test_row.addWidget(self.test_status, 1)
+        layout.addLayout(test_row)
+
+        note = QLabel(
+            "每个 API 地址的 Key/模型会分别保存，切换预设后自动恢复。"
+            "API Key 只保存在本机 config.json，不会写入日志或导出文件；"
+            "生成周报时只发送 7/30 天的聚合统计，不发送原始样本。"
+        )
+        note.setWordWrap(True)
+        note.setObjectName("subtle")
+        layout.addWidget(note)
+
+        buttons = QHBoxLayout()
+        buttons.addStretch(1)
+        cancel_button = QPushButton("取消")
+        cancel_button.setObjectName("ghostButton")
+        cancel_button.clicked.connect(self.reject)
+        buttons.addWidget(cancel_button)
+        save_button = QPushButton("保存")
+        save_button.setObjectName("primaryButton")
+        save_button.clicked.connect(self._save)
+        buttons.addWidget(save_button)
+        layout.addLayout(buttons)
+
+        provider = str(config.get("ai_provider") or "none")
+        index = self.provider_combo.findData(provider)
+        self.provider_combo.setCurrentIndex(max(0, index))
+        self.base_edit.setText(str(config.get("ai_base_url") or ""))
+        self.key_edit.setText(str(config.get("ai_api_key") or ""))
+        self.model_edit.setText(str(config.get("ai_model") or ""))
+        raw_profiles = config.get("ai_profiles")
+        self._profiles: dict[str, dict] = {}
+        if isinstance(raw_profiles, dict):
+            for key, value in raw_profiles.items():
+                if isinstance(value, dict):
+                    self._profiles[str(key)] = dict(value)
+        self._active_base = self._profile_key(
+            str(config.get("ai_base_url") or "")
+        )
+        self.base_edit.editingFinished.connect(self._on_base_edited)
+        self.provider_combo.currentIndexChanged.connect(self._update_state)
+        self._update_state()
+
+    def _update_state(self, _index: int = 0) -> None:
+        provider = str(self.provider_combo.currentData() or "none")
+        enabled = provider in ("openai", "ollama")
+        self.base_edit.setEnabled(enabled)
+        self.key_edit.setEnabled(enabled)
+        self.model_edit.setEnabled(enabled)
+        self.test_button.setEnabled(enabled)
+        if provider == "openai":
+            self.base_edit.setPlaceholderText("例如 https://open.bigmodel.cn/api/paas/v4")
+            self.key_edit.setPlaceholderText("填写你自己的 API Key")
+            self.model_edit.setPlaceholderText(
+                "例如 glm-4.7-flash 或 glm-4.6v-flash"
+            )
+        elif provider == "ollama":
+            self.base_edit.setPlaceholderText(OLLAMA_BASE_URL)
+            self.key_edit.setPlaceholderText("Ollama 通常留空")
+            self.model_edit.setPlaceholderText("例如 qwen2.5:7b")
+        else:
+            self.base_edit.setPlaceholderText("")
+            self.key_edit.setPlaceholderText("")
+            self.model_edit.setPlaceholderText("")
+
+    def _toggle_key(self, checked: bool) -> None:
+        self.key_edit.setEchoMode(
+            QLineEdit.EchoMode.Normal if checked else QLineEdit.EchoMode.Password
+        )
+
+    @staticmethod
+    def _profile_key(base: str) -> str:
+        return (base or "").strip().rstrip("/")
+
+    def _remember_current(self, base: str | None = None) -> None:
+        target = self._profile_key(
+            base if base is not None else self.base_edit.text()
+        )
+        if not target:
+            return
+        api_key = self.key_edit.text().strip()
+        model = self.model_edit.text().strip()
+        provider = str(self.provider_combo.currentData() or "none")
+        if api_key:
+            self._profiles[target] = {
+                "provider": provider,
+                "base_url": target,
+                "api_key": api_key,
+                "model": model,
+            }
+        else:
+            self._profiles.pop(target, None)
+
+    def _switch_to(self, base: str, model: str, provider: str = "openai") -> None:
+        self._remember_current(self._active_base)
+        index = self.provider_combo.findData(provider)
+        self.provider_combo.setCurrentIndex(max(0, index))
+        self.base_edit.setText(base)
+        self.model_edit.setText(model)
+        key = self._profile_key(base)
+        profile = self._profiles.get(key)
+        if profile and profile.get("api_key"):
+            self.key_edit.setText(str(profile.get("api_key") or ""))
+        else:
+            self.key_edit.clear()
+        self._active_base = key
+        self._update_state()
+
+    def _on_base_edited(self) -> None:
+        base = self._profile_key(self.base_edit.text())
+        if base == self._active_base:
+            return
+        self._remember_current(self._active_base)
+        profile = self._profiles.get(base)
+        if profile:
+            if profile.get("api_key"):
+                self.key_edit.setText(str(profile.get("api_key") or ""))
+            if not self.model_edit.text().strip():
+                self.model_edit.setText(str(profile.get("model") or ""))
+            provider = str(profile.get("provider") or "openai")
+            index = self.provider_combo.findData(provider)
+            if index >= 0:
+                self.provider_combo.setCurrentIndex(index)
+        else:
+            self.key_edit.clear()
+        self._active_base = base
+        self._update_state()
+
+    def _apply_glm(self, model: str = GLM_MODEL) -> None:
+        self._switch_to(GLM_BASE_URL, model)
+
+    def _apply_deepseek(self) -> None:
+        self._switch_to(DEEPSEEK_BASE_URL, DEEPSEEK_MODEL)
+
+    def _apply_ollama(self) -> None:
+        self._switch_to(OLLAMA_BASE_URL, OLLAMA_MODEL, "ollama")
+
+    def _collect(self) -> AIConfig:
+        return AIConfig(
+            provider=str(self.provider_combo.currentData() or "none"),
+            base_url=self.base_edit.text().strip(),
+            api_key=self.key_edit.text().strip(),
+            model=self.model_edit.text().strip(),
+        )
+
+    def _test_connection(self) -> None:
+        config = self._collect()
+        if not config.enabled:
+            self.test_status.setText("请先填写 API 地址和模型名称。")
+            return
+        self._remember_current()
+        self.test_button.setEnabled(False)
+        self.test_status.setStyleSheet("")
+        self.test_status.setText("正在测试…")
+        worker = _AITestWorker(config)
+        thread = threading.Thread(target=worker.run, daemon=True)
+        worker.done.connect(self._on_test_done)
+        self._test_worker = worker
+        self._test_thread = thread
+        thread.start()
+
+    def _on_test_done(self, ok: bool, message: str) -> None:
+        self.test_button.setEnabled(True)
+        prefix = "连接成功：" if ok else "连接失败："
+        self.test_status.setStyleSheet(
+            f"color: {COLORS['accent'] if ok else COLORS['red']};"
+        )
+        self.test_status.setText(prefix + message[:600])
+
+    def _save(self) -> None:
+        config = self._collect()
+        if config.provider != "none" and (
+            not config.base_url or not config.model
+        ):
+            QMessageBox.warning(
+                self, "模型设置", "请填写 API 地址和模型名称。"
+            )
+            return
+        self._remember_current()
+        self.config.set("ai_provider", config.provider)
+        self.config.set("ai_base_url", config.base_url)
+        self.config.set("ai_api_key", config.api_key)
+        self.config.set("ai_model", config.model)
+        self.config.set("ai_profiles", self._profiles)
+        self.accept()
+
+
 class AiPage(QWidget):
-    def __init__(self, db: Database, export_callback: Callable[[], None], parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        db: Database,
+        config: Config,
+        export_callback: Callable[[], None],
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
         self.db = db
+        self.config = config
         self.export_callback = export_callback
+        self._reports: list[dict] = []
+        self._current_content = ""
+        self._report_thread: threading.Thread | None = None
+        self._report_worker: _AIReportWorker | None = None
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         layout = _make_scroll(outer)
 
-        badge = QLabel("规划中")
+        badge = QLabel("周报")
         badge.setObjectName("chip")
-        layout.addLayout(_header("AI 洞察", "数据已经准备好，分析能力即将接入", badge))
+        layout.addLayout(
+            _header("AI 健康周报", "本地规则，或使用你自己的模型", badge)
+        )
 
-        hero = Card()
-        hero.body.addLayout(
-            card_header(
-                "为 AI 分析打底",
-                "结构化存储 · 可导出 · 可按时间窗读取",
-            )
+        report_card = Card()
+        report_card.body.addLayout(
+            card_header("健康周报", "最近 7 天 · 对比 30 天基线")
         )
-        description = QLabel(
-            "PulseBridge 会把所有数据归一化后存进本地 SQLite，包括心率、静息心率、HRV、"
-            "睡眠阶段、步数、活动能量和运动记录。后续版本会加入大模型分析：\n\n"
-            "· 睡眠质量与恢复状态解读\n"
-            "· 训练负荷与心率区间趋势\n"
-            "· 每周健康摘要与可执行建议\n"
-            "· 异常波动提醒（需要你主动开启）\n\n"
-            "所有数据默认只保存在这台电脑上，接入云端模型前会明确征得你的同意。"
-        )
-        description.setWordWrap(True)
-        description.setStyleSheet(f"color: {COLORS['muted']}; font-size: 13px; line-height: 1.75;")
-        hero.body.addWidget(description)
-        layout.addWidget(hero)
+
+        provider_row = QHBoxLayout()
+        provider_row.setSpacing(8)
+        self.provider_label = QLabel("")
+        self.provider_label.setObjectName("subtle")
+        self.provider_label.setWordWrap(True)
+        provider_row.addWidget(self.provider_label, 1)
+        settings_button = QPushButton("模型设置")
+        settings_button.setObjectName("ghostButton")
+        settings_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        settings_button.clicked.connect(self._open_settings)
+        provider_row.addWidget(settings_button)
+        report_card.body.addLayout(provider_row)
+
+        actions = QHBoxLayout()
+        actions.setSpacing(8)
+        self.generate_button = QPushButton("生成周报")
+        self.generate_button.setObjectName("primaryButton")
+        self.generate_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.generate_button.clicked.connect(self._generate)
+        actions.addWidget(self.generate_button)
+
+        self.copy_button = QPushButton("复制")
+        self.copy_button.setObjectName("ghostButton")
+        self.copy_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.copy_button.setEnabled(False)
+        self.copy_button.clicked.connect(self._copy_report)
+        actions.addWidget(self.copy_button)
+
+        self.export_button = QPushButton("导出 Markdown")
+        self.export_button.setObjectName("ghostButton")
+        self.export_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.export_button.setEnabled(False)
+        self.export_button.clicked.connect(self._export_report)
+        actions.addWidget(self.export_button)
+
+        actions.addSpacing(10)
+        history_label = QLabel("历史")
+        history_label.setObjectName("subtle")
+        actions.addWidget(history_label)
+        self.history_combo = QComboBox()
+        self.history_combo.setMinimumWidth(170)
+        self.history_combo.currentIndexChanged.connect(self._on_history_changed)
+        actions.addWidget(self.history_combo)
+        actions.addStretch(1)
+        report_card.body.addLayout(actions)
+
+        self.status_label = QLabel("")
+        self.status_label.setObjectName("subtle")
+        self.status_label.setWordWrap(True)
+        report_card.body.addWidget(self.status_label)
+
+        self.report_view = QTextBrowser()
+        self.report_view.setMinimumHeight(430)
+        self.report_view.setOpenExternalLinks(True)
+        report_card.body.addWidget(self.report_view)
+
+        self.report_meta = QLabel("")
+        self.report_meta.setObjectName("subtle")
+        self.report_meta.setWordWrap(True)
+        report_card.body.addWidget(self.report_meta)
+        layout.addWidget(report_card)
 
         summary_card = Card()
-        summary_card.body.addLayout(card_header("近 7 天数据概览", "用于 AI 提示词的数据摘要"))
+        summary_card.body.addLayout(
+            card_header("近 7 天数据概览", "周报使用的本地数据摘要")
+        )
         self.summary_label = QLabel("")
         self.summary_label.setWordWrap(True)
-        self.summary_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.summary_label.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
         self.summary_label.setStyleSheet(
             f"color: {COLORS['muted']}; font-size: 12px; line-height: 1.9;"
         )
         summary_card.body.addWidget(self.summary_label)
 
         buttons = QHBoxLayout()
-        export_button = QPushButton("导出最近 30 天 JSON")
-        export_button.setObjectName("primaryButton")
-        export_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        export_button.clicked.connect(self.export_callback)
-        buttons.addWidget(export_button)
+        export_json_button = QPushButton("导出最近 30 天 JSON")
+        export_json_button.setObjectName("primaryButton")
+        export_json_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        export_json_button.clicked.connect(self.export_callback)
+        buttons.addWidget(export_json_button)
 
-        copy_button = QPushButton("复制数据摘要")
-        copy_button.setObjectName("ghostButton")
-        copy_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        copy_button.clicked.connect(self._copy_summary)
-        buttons.addWidget(copy_button)
-
-        upcoming = QPushButton("AI 分析（即将上线）")
-        upcoming.setObjectName("ghostButton")
-        upcoming.setEnabled(False)
-        buttons.addWidget(upcoming)
+        copy_summary_button = QPushButton("复制数据摘要")
+        copy_summary_button.setObjectName("ghostButton")
+        copy_summary_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        copy_summary_button.clicked.connect(self._copy_summary)
+        buttons.addWidget(copy_summary_button)
         buttons.addStretch(1)
         summary_card.body.addLayout(buttons)
         layout.addWidget(summary_card)
         layout.addStretch(1)
 
         self.refresh()
+        self._load_history(select_latest=True)
 
     def refresh(self) -> None:
+        config = ai_config_from_config(self.config)
+        if config.provider == "openai":
+            text = f"模型：OpenAI 兼容 API · {config.model or '未填模型'}"
+            if not config.api_key:
+                text += " · 未填 API Key"
+            if config.base_url:
+                text += f" · {config.base_url}"
+            self.provider_label.setText(text)
+        elif config.provider == "ollama":
+            self.provider_label.setText(
+                f"模型：本地 Ollama · {config.model or '未填模型'}"
+                f" · {config.base_url}"
+            )
+        else:
+            self.provider_label.setText(
+                "未配置模型：将使用本地规则分析，数据不会离开这台电脑。"
+            )
+
         lines = []
         for metric, label, unit, digits in (
             ("steps", "步数", "步", 0),
@@ -2041,21 +2466,183 @@ class AiPage(QWidget):
             ("active_energy", "活动能量", "kcal", 0),
         ):
             points = analytics.daily_series(self.db, metric, 7)
-            stats = analytics.series_stats(points, metric in analytics.CUMULATIVE_TYPES)
+            stats = analytics.series_stats(
+                points, metric in analytics.CUMULATIVE_TYPES
+            )
             if stats["count"] == 0:
                 continue
             if metric == "sleep":
                 text = f"平均 {fmt_float(stats['avg'], digits)} {unit}"
             elif metric in analytics.CUMULATIVE_TYPES:
-                text = f"日均 {fmt_float(stats['avg'], digits)} {unit} · 最高 {fmt_float(stats['max'], digits)}"
+                text = (
+                    f"日均 {fmt_float(stats['avg'], digits)} {unit}"
+                    f" · 最高 {fmt_float(stats['max'], digits)}"
+                )
             else:
-                text = f"平均 {fmt_float(stats['avg'], digits)} {unit} · 区间 {fmt_float(stats['min'], digits)}–{fmt_float(stats['max'], digits)}"
+                text = (
+                    f"平均 {fmt_float(stats['avg'], digits)} {unit}"
+                    f" · 区间 {fmt_float(stats['min'], digits)}–"
+                    f"{fmt_float(stats['max'], digits)}"
+                )
             lines.append(f"{label}：{text}")
-        self.summary_label.setText("　　".join(lines) if lines else "还没有足够的数据，先在 iPhone 上运行一次同步。")
+        self.summary_label.setText(
+            "　　".join(lines)
+            if lines
+            else "还没有足够的数据，先在 iPhone 上运行一次同步。"
+        )
+
+    def _open_settings(self) -> None:
+        dialog = _AIModelDialog(self.config, self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self.refresh()
+            self.status_label.setStyleSheet(f"color: {COLORS['accent']};")
+            self.status_label.setText("模型设置已保存。")
+
+    def _generate(self) -> None:
+        if self._report_thread and self._report_thread.is_alive():
+            return
+        config = ai_config_from_config(self.config)
+        self.generate_button.setEnabled(False)
+        self.generate_button.setText("生成中…")
+        self.status_label.setStyleSheet(f"color: {COLORS['muted']};")
+        if config.enabled:
+            self.status_label.setText(
+                f"正在调用 {config.model} 分析最近 7 天数据…"
+            )
+        else:
+            self.status_label.setText(
+                "未配置模型，正在生成本地规则周报（数据不会上传）…"
+            )
+        worker = _AIReportWorker(self.db, config, 7)
+        thread = threading.Thread(target=worker.run, daemon=True)
+        worker.finished.connect(self._on_report_finished)
+        worker.failed.connect(self._on_report_failed)
+        self._report_worker = worker
+        self._report_thread = thread
+        thread.start()
+
+    def _reset_generate(self) -> None:
+        self.generate_button.setEnabled(True)
+        self.generate_button.setText("生成周报")
+        self._report_thread = None
+        self._report_worker = None
+
+    def _on_report_finished(self, payload: dict) -> None:
+        self._reset_generate()
+        content = str(payload.get("content") or "")
+        mode = str(payload.get("mode") or "rule")
+        error = str(payload.get("error") or "")
+        context = payload.get("context") or {}
+        period = context.get("period") or {}
+        config = ai_config_from_config(self.config)
+        provider = config.provider if mode == "llm" else "rule"
+        model = config.model if mode == "llm" else ""
+        try:
+            self.db.save_ai_report(
+                {
+                    "created_at": int(datetime.now().timestamp()),
+                    "period_start": period.get("start") or "",
+                    "period_end": period.get("end") or "",
+                    "provider": provider,
+                    "model": model,
+                    "mode": mode,
+                    "content": content,
+                    "context": context,
+                }
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.status_label.setStyleSheet(f"color: {COLORS['red']};")
+            self.status_label.setText(f"周报已生成，但保存失败：{exc}")
+        if error:
+            self.status_label.setStyleSheet(f"color: {COLORS['orange']};")
+            self.status_label.setText(
+                f"模型调用失败，已改用本地规则版：{error[:220]}"
+            )
+        elif "保存失败" not in self.status_label.text():
+            self.status_label.setStyleSheet(f"color: {COLORS['accent']};")
+            self.status_label.setText("周报已生成并保存到本地。")
+        self._load_history(select_latest=True)
+
+    def _on_report_failed(self, message: str) -> None:
+        self._reset_generate()
+        self.status_label.setStyleSheet(f"color: {COLORS['red']};")
+        self.status_label.setText(f"生成失败：{message[:300]}")
+
+    def _load_history(self, select_latest: bool = False) -> None:
+        reports = self.db.recent_ai_reports(20)
+        self._reports = reports
+        self.history_combo.blockSignals(True)
+        self.history_combo.clear()
+        for row in reports:
+            created = datetime.fromtimestamp(
+                int(row["created_at"])
+            ).strftime("%m-%d %H:%M")
+            mode = "模型" if row.get("mode") == "llm" else "规则"
+            self.history_combo.addItem(f"{created} · {mode}", int(row["id"]))
+        self.history_combo.blockSignals(False)
+        if reports:
+            self.history_combo.setCurrentIndex(0)
+            self._show_report(reports[0])
+        else:
+            self._current_content = ""
+            self.report_view.setMarkdown(
+                "# 还没有周报\n\n"
+                "点击「生成周报」即可。未配置模型时会使用本地规则分析，"
+                "数据不会离开这台电脑。"
+            )
+            self.report_meta.setText("")
+            self.copy_button.setEnabled(False)
+            self.export_button.setEnabled(False)
+
+    def _on_history_changed(self, index: int) -> None:
+        if 0 <= index < len(self._reports):
+            self._show_report(self._reports[index])
+
+    def _show_report(self, row: dict) -> None:
+        self._current_content = str(row.get("content") or "")
+        self.report_view.setMarkdown(self._current_content)
+        created = datetime.fromtimestamp(
+            int(row["created_at"])
+        ).strftime("%Y-%m-%d %H:%M")
+        mode = "模型生成" if row.get("mode") == "llm" else "本地规则"
+        provider = str(row.get("provider") or "")
+        model = str(row.get("model") or "")
+        meta = f"生成于 {created} · {mode}"
+        if mode == "模型生成" and (provider or model):
+            meta += f" · {provider}"
+            if model:
+                meta += f" / {model}"
+        self.report_meta.setText(meta)
+        self.copy_button.setEnabled(bool(self._current_content))
+        self.export_button.setEnabled(bool(self._current_content))
+
+    def _copy_report(self) -> None:
+        if not self._current_content:
+            return
+        QApplication.clipboard().setText(self._current_content)
+        self.status_label.setStyleSheet(f"color: {COLORS['muted']};")
+        self.status_label.setText("周报已复制到剪贴板。")
+
+    def _export_report(self) -> None:
+        if not self._current_content:
+            return
+        default_name = f"PulseBridge-健康周报-{datetime.now():%Y%m%d}.md"
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "导出周报",
+            str(Path.home() / default_name),
+            "Markdown (*.md)",
+        )
+        if not path:
+            return
+        try:
+            Path(path).write_text(self._current_content, "utf-8")
+            self.status_label.setStyleSheet(f"color: {COLORS['muted']};")
+            self.status_label.setText(f"已导出：{path}")
+        except OSError as exc:
+            QMessageBox.warning(self, "导出失败", str(exc))
 
     def _copy_summary(self) -> None:
-        from PySide6.QtWidgets import QApplication
-
         QApplication.clipboard().setText(self.summary_label.text())
 
 

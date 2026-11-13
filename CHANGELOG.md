@@ -1,5 +1,30 @@
 # Changelog
 
+## v2.2.0 — 2026-11-13
+
+### 新增
+
+- **AI 健康周报**：默认使用本地规则分析（7 天对比 30 天基线），完全不联网；
+  也可以配置用户自己的 OpenAI 兼容 API（智谱 GLM、DeepSeek、OpenAI 等）或本地 Ollama。
+  程序不内置任何 API Key；模型调用失败时自动回退到本地规则版。
+- **模型设置**：提供智谱 GLM-4.7-Flash（`glm-4.7-flash`，免费文本）、
+  GLM-4.6V-Flash（`glm-4.6v-flash`，免费多模态）与 DeepSeek / Ollama 预设、
+  连接测试；API Key 只保存在本机 config.json。
+- **按地址保存配置**：每个 API 地址（GLM / DeepSeek / Ollama）分别保存 Key 和模型，
+  切换预设后自动恢复，不需要重新输入。
+- 连接测试提高 token 上限并显示完整错误；DeepSeek V4.1 Flash（`deepseek-flash`）
+  余额不足或只返回思考内容时都有明确处理。
+- **周报历史**：保存到本地 SQLite，可切换历史、复制、导出 Markdown。
+- 只向模型发送 7/30 天聚合统计，不发送原始样本。
+
+### 文档
+
+- 新增 [docs/ai-report.md](docs/ai-report.md)：GLM 免费 API、Ollama、隐私与排错。
+
+### 测试
+
+- **55 个自动化测试**（新增 URL 规范化、周报上下文、规则报告、模型响应/回退、周报存储、按地址保存 Key、思考模式响应）。
+
 ## v2.1.3 — 2026-11-13
 
 ### 新增

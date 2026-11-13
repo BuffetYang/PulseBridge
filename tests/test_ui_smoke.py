@@ -53,3 +53,42 @@ def test_main_window_builds(tmp_path) -> None:
     window._quitting = True
     window.close()
     db.close()
+
+
+def test_ai_model_profiles_keep_keys(tmp_path) -> None:
+    from PySide6.QtWidgets import QApplication
+
+    from pulsebridge.ai import (
+        DEEPSEEK_BASE_URL,
+        DEEPSEEK_MODEL,
+        GLM_BASE_URL,
+        GLM_MODEL,
+    )
+    from pulsebridge.ui.pages import _AIModelDialog
+
+    app = QApplication.instance() or QApplication([])
+    config = Config(tmp_path / "config.json")
+    config.set("ai_provider", "openai")
+    config.set("ai_base_url", GLM_BASE_URL)
+    config.set("ai_api_key", "glm-key")
+    config.set("ai_model", GLM_MODEL)
+
+    dialog = _AIModelDialog(config)
+    assert dialog.key_edit.text() == "glm-key"
+    dialog._apply_deepseek()
+    assert dialog.base_edit.text() == DEEPSEEK_BASE_URL
+    assert dialog.key_edit.text() == ""  # DeepSeek 还没有保存过
+    dialog.key_edit.setText("deep-key")
+    dialog._apply_glm(GLM_MODEL)
+    assert dialog.key_edit.text() == "glm-key"
+    dialog._apply_deepseek()
+    assert dialog.key_edit.text() == "deep-key"
+    dialog._save()
+
+    reopened = _AIModelDialog(config)
+    reopened._apply_deepseek()
+    assert reopened.key_edit.text() == "deep-key"
+    assert reopened.model_edit.text() == DEEPSEEK_MODEL
+    reopened._apply_glm(GLM_MODEL)
+    assert reopened.key_edit.text() == "glm-key"
+    app.processEvents()

@@ -84,6 +84,19 @@ CREATE TABLE IF NOT EXISTS ingest_events (
     message       TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_ingest_received ON ingest_events(received_at);
+
+CREATE TABLE IF NOT EXISTS ai_reports (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at    INTEGER NOT NULL,
+    period_start  TEXT NOT NULL,
+    period_end    TEXT NOT NULL,
+    provider      TEXT,
+    model         TEXT,
+    mode          TEXT NOT NULL,
+    content       TEXT NOT NULL,
+    context_json  TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_ai_reports_created ON ai_reports(created_at);
 """
 
 
@@ -380,6 +393,43 @@ class Database:
     def latest_activity_summary(self) -> dict | None:
         rows = self._rows(
             "SELECT * FROM activity_summaries ORDER BY date DESC LIMIT 1"
+        )
+        return dict(rows[0]) if rows else None
+
+    def save_ai_report(self, report: dict[str, Any]) -> int:
+        context = report.get("context")
+        context_json = json.dumps(context, ensure_ascii=False) if context else None
+        with self._lock, self._conn:
+            cursor = self._conn.execute(
+                """
+                INSERT INTO ai_reports
+                    (created_at, period_start, period_end, provider, model,
+                     mode, content, context_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    int(report.get("created_at") or time.time()),
+                    str(report.get("period_start") or ""),
+                    str(report.get("period_end") or ""),
+                    report.get("provider"),
+                    report.get("model"),
+                    str(report.get("mode") or "rule"),
+                    str(report.get("content") or ""),
+                    context_json,
+                ),
+            )
+            return int(cursor.lastrowid)
+
+    def recent_ai_reports(self, limit: int = 20) -> list[dict]:
+        rows = self._rows(
+            "SELECT * FROM ai_reports ORDER BY created_at DESC, id DESC LIMIT ?",
+            (max(1, int(limit)),),
+        )
+        return [dict(row) for row in rows]
+
+    def ai_report(self, report_id: int) -> dict | None:
+        rows = self._rows(
+            "SELECT * FROM ai_reports WHERE id = ?", (int(report_id),)
         )
         return dict(rows[0]) if rows else None
 

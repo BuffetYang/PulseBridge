@@ -29,6 +29,11 @@ PulseBridge 让你的 iPhone / Apple Watch 健康与运动数据自动出现在 
   <img src="docs/screenshots/workouts.png" width="49%" alt="运动记录">
 </p>
 
+<p align="center">
+  <img src="docs/screenshots/ai.png" width="49%" alt="AI 健康周报">
+  <img src="docs/screenshots/settings.png" width="49%" alt="设置">
+</p>
+
 ---
 
 ## 数据流
@@ -68,7 +73,8 @@ PulseBridge 让你的 iPhone / Apple Watch 健康与运动数据自动出现在 
 - **内置 PulsHealth 接收协议**：免费 App 自动后台同步 5 类数据，零快捷指令配置。
 - **Apple Health 全量导入**：导入 `export.zip` 获取全部指标与历史，支持每周/每月提醒。
 - **系统托盘**：关闭窗口不退出，后台持续接收；可设置开机自启。
-- **AI 洞察（预留）**：数据摘要与 JSON 导出，后续接入大模型分析。
+- **AI 健康周报**：默认本地规则分析；也可配置自己的 OpenAI 兼容 API（GLM / DeepSeek 等）
+  或本地 Ollama，只发送 7/30 天聚合统计。
 
 ## 支持的数据
 
@@ -140,6 +146,17 @@ PulsHealth 免费版只有 5 类 / 30 天。需要其他指标或完整历史时
 > 手机与电脑必须在同一个 Wi-Fi。iOS 自动化没有「每小时」触发器，
 > 推荐「连接家庭 Wi-Fi / 开始充电 / 若干定点时间」组合触发；每次同步最近 2 天数据，
 > 服务端按 UUID 去重，因此漏掉某次触发也不会丢数据。
+
+### AI 健康周报
+
+打开 **AI 健康周报** 页面：
+
+- 不配置模型时，直接点 **生成周报**，使用本地规则分析 7 天数据并对比 30 天基线；
+- 也可以点 **模型设置**，填写自己的 OpenAI 兼容 API（如智谱 GLM-4.7-Flash /
+  GLM-4.6V-Flash 免费模型、DeepSeek、OpenAI），或连接本地 Ollama；
+- 程序不内置任何 API Key，只发送聚合统计，不发送原始样本；周报保存在本地，可导出 Markdown。
+
+详细配置与排错：[docs/ai-report.md](docs/ai-report.md)。
 
 ### 手机打不开？
 
@@ -235,7 +252,7 @@ uv run pytest -q
 - [x] 仪表盘 / 趋势 / 运动 / 同步 / 设置
 - [x] 托盘常驻、开机自启、二维码配对
 - [x] 数据导出，为 AI 分析做准备
-- [ ] AI 周报：睡眠、恢复、训练负荷解读（可选接入云端或本地模型）
+- [x] AI 周报：睡眠、恢复、训练负荷解读（本地规则，或接入自己的模型/Ollama）
 - [ ] 异常波动提醒
 - [ ] 多设备 / 家庭成员支持
 

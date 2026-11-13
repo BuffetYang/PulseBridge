@@ -51,7 +51,7 @@ NAV_ITEMS = [
     ("🌙", "睡眠"),
     ("🏃", "运动记录"),
     ("📡", "同步与配对"),
-    ("✨", "AI 洞察"),
+    ("✨", "AI 周报"),
     ("⚙️", "设置"),
 ]
 
@@ -112,7 +112,7 @@ class MainWindow(QMainWindow):
             open_puls_guide=self._open_puls_guide,
             on_address_changed=self._update_sidebar_status,
         )
-        self.ai = AiPage(db, lambda: export_data(self.ai, 30))
+        self.ai = AiPage(db, config, lambda: export_data(self.ai, 30))
         self.settings = SettingsPage(db, config, controller, self.refresh_all)
         self.pages = [
             self.dashboard,
