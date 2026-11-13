@@ -462,20 +462,39 @@ class DashboardPage(QWidget):
         else:
             self.card_steps.set_value("--", "步", "等待 iPhone 首次同步", [None])
 
-        # 静息心率
-        resting = analytics.latest_sample(self.db, "resting_heart_rate")
-        resting_series = analytics.daily_series(self.db, "resting_heart_rate", 7)
-        if resting and resting.get("value") is not None:
+        # 静息心率：优先 Apple 官方样本；最近缺失的日期用睡眠心率估算
+        resting_series = analytics.resting_heart_rate_series(self.db, 7)
+        resting_spark = [p["value"] for p in resting_series]
+        resting_point = next(
+            (p for p in reversed(resting_series) if p["value"] is not None), None
+        )
+        if resting_point and resting_point["estimated"]:
+            day_label = (
+                "今天"
+                if resting_point["date"] == datetime.now().strftime("%Y-%m-%d")
+                else local_date_label(resting_point["date"])
+            )
             self.card_resting.set_value(
-                fmt_int(resting["value"]),
+                f"≈ {fmt_int(resting_point['value'])}",
                 "bpm",
-                f"{humanize_ago(resting['start_ts'])} · {resting.get('source') or 'Apple Watch'}",
-                [p["value"] for p in resting_series],
+                f"睡眠心率估算 · {day_label}",
+                resting_spark,
+                badge="估算",
             )
         else:
-            self.card_resting.set_value(
-                "--", "bpm", "暂无静息心率数据", [p["value"] for p in resting_series]
-            )
+            resting = analytics.latest_sample(self.db, "resting_heart_rate")
+            if resting and resting.get("value") is not None:
+                self.card_resting.set_value(
+                    fmt_int(resting["value"]),
+                    "bpm",
+                    f"{humanize_ago(resting['start_ts'])} · {resting.get('source') or 'Apple Watch'}",
+                    resting_spark,
+                    badge="",
+                )
+            else:
+                self.card_resting.set_value(
+                    "--", "bpm", "暂无静息心率数据", resting_spark, badge=""
+                )
 
         # 睡眠
         night = analytics.last_night(self.db)
@@ -755,7 +774,13 @@ class TrendsPage(QWidget):
         self._load_trend_metrics()
         metric = self.metric_combo.currentData() or "steps"
         meta = analytics.metric_meta(metric)
-        points = analytics.daily_series(self.db, metric, self.days)
+        estimate_note = ""
+        if metric == "resting_heart_rate":
+            points = analytics.resting_heart_rate_series(self.db, self.days)
+            if any(point.get("estimated") for point in points):
+                estimate_note = " · ≈ 由睡眠心率估算"
+        else:
+            points = analytics.daily_series(self.db, metric, self.days)
         raw_values = [p["value"] for p in points]
         values = [analytics.display_value(metric, value) for value in raw_values]
         unit = meta["unit"]
@@ -764,7 +789,7 @@ class TrendsPage(QWidget):
         use_bar = is_sleep or metric in analytics.CUMULATIVE_TYPES
 
         self.chart_card.findChild(QLabel, "cardTitle").setText(f"{meta['label']} · 趋势")
-        self.chart_card.set_subtitle(f"近 {self.days} 天")
+        self.chart_card.set_subtitle(f"近 {self.days} 天{estimate_note}")
 
         if use_bar:
             labels = []
@@ -966,6 +991,7 @@ class MetricsPage(QWidget):
         trend_keys = {key for key, _label in _available_trend_metrics(self.db)}
         entries = []
         for type_, count in counts.items():
+            estimated = False
             if type_ == "sleep_analysis":
                 night = analytics.last_night(self.db)
                 meta = analytics.METRIC_META["sleep"]
@@ -982,7 +1008,11 @@ class MetricsPage(QWidget):
                 unit = meta.get("unit", "")
                 digits = int(meta.get("digits", 1))
                 series = (
-                    analytics.daily_series(self.db, type_, 7)
+                    (
+                        analytics.resting_heart_rate_series(self.db, 7)
+                        if type_ == "resting_heart_rate"
+                        else analytics.daily_series(self.db, type_, 7)
+                    )
                     if type_ in analytics.METRIC_META
                     and type_ not in _NON_NUMERIC_METRICS
                     else []
@@ -990,6 +1020,7 @@ class MetricsPage(QWidget):
                 last_point = next(
                     (p for p in reversed(series) if p["value"] is not None), None
                 )
+                estimated = bool(last_point and last_point.get("estimated"))
                 value = analytics.display_value(
                     type_, last_point["value"] if last_point else None
                 )
@@ -1005,6 +1036,8 @@ class MetricsPage(QWidget):
                     unit = latest.get("unit") or unit or ""
             else:
                 display_value = fmt_float(value, digits) if value is not None else "--"
+                if estimated and value is not None:
+                    display_value = f"≈ {display_value}"
                 if not known_meta and latest and latest.get("unit"):
                     unit = latest["unit"]
 
@@ -1014,6 +1047,8 @@ class MetricsPage(QWidget):
             subtitle_parts = [f"{count:,} 条"]
             if subtitle_date:
                 subtitle_parts.append(f"最近 {local_date_label(subtitle_date)}")
+            if estimated:
+                subtitle_parts.append("估算")
             source_text = ""
             if latest and latest.get("source"):
                 source_text = str(latest["source"]).replace("\xa0", " ")

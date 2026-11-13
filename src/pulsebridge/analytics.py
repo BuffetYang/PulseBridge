@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import time
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any
 
 from .db import Database
@@ -311,6 +311,114 @@ def daily_series(db: Database, metric: str, days: int) -> list[dict[str, Any]]:
         values = {day: found.get(day) for day in dates}
 
     return [{"date": day, "value": values.get(day)} for day in dates]
+
+
+RESTING_ESTIMATE_MIN_SAMPLES = 20
+RESTING_ESTIMATE_PERCENTILE = 0.7
+
+
+def _percentile(sorted_values: list[float], q: float) -> float:
+    """线性插值分位数；调用方需先升序排序。"""
+    if not sorted_values:
+        return 0.0
+    if len(sorted_values) == 1:
+        return float(sorted_values[0])
+    position = (len(sorted_values) - 1) * q
+    lower = int(position)
+    upper = min(lower + 1, len(sorted_values) - 1)
+    weight = position - lower
+    return float(sorted_values[lower] * (1 - weight) + sorted_values[upper] * weight)
+
+
+def _day_start_ts(day: str) -> int:
+    try:
+        return int(datetime.strptime(day, "%Y-%m-%d").timestamp())
+    except ValueError:
+        return 0
+
+
+def _estimate_resting_hr_for_day(
+    db: Database, day: str, sleep_intervals: list[tuple[int, int]]
+) -> float | None:
+    """用睡眠期间的心率估算静息心率。
+
+    Apple 的静息心率是独立指标，原始心率流无法完全复现；这里取睡眠心率
+    的 70% 分位，作为缺失日期的近似值。没有睡眠记录时退化为 00:00–07:00
+    的夜间心率。
+    """
+    day_start = _day_start_ts(day)
+    if not day_start:
+        return None
+    day_end = day_start + 86400
+
+    values: list[float] = []
+    if sleep_intervals:
+        lo = max(day_start - 12 * 3600, min(start for start, _end in sleep_intervals))
+        hi = min(day_end + 6 * 3600, max(end for _start, end in sleep_intervals))
+        for row in db.samples_between("heart_rate", lo, hi, limit=50000):
+            value = row.get("value")
+            if value is None:
+                continue
+            ts = int(row["start_ts"])
+            if any(start <= ts <= end for start, end in sleep_intervals):
+                values.append(float(value))
+
+    if len(values) < RESTING_ESTIMATE_MIN_SAMPLES:
+        rows = db.samples_between(
+            "heart_rate", day_start, day_start + 7 * 3600, limit=20000
+        )
+        values = [float(row["value"]) for row in rows if row.get("value") is not None]
+
+    if len(values) < RESTING_ESTIMATE_MIN_SAMPLES:
+        return None
+    values.sort()
+    return _percentile(values, RESTING_ESTIMATE_PERCENTILE)
+
+
+def resting_heart_rate_series(db: Database, days: int = 7) -> list[dict[str, Any]]:
+    """每日静息心率：优先 Apple 官方样本，缺失日期用心率估算。
+
+    返回 ``[{date, value, estimated}]``，日期连续；``estimated`` 为 True 表示
+    该天的值由睡眠心率推算，不是 HealthKit 的 RestingHeartRate 样本。
+    """
+    days = max(1, int(days))
+    dates = date_range(days)
+    start = start_of_local_day(offset_days=-(days - 1))
+    official = {
+        str(row["day"]): float(row["avg"])
+        for row in db.daily_stats("resting_heart_rate", start)
+    }
+    # 只估算「官方样本之后」的缺失日期，避免在历史空档里凭空生成估算值。
+    # 最多回看 14 天，既覆盖最近未导入的几天，也不会拖慢 90 天趋势。
+    recent_floor = dates[max(0, len(dates) - 14)]
+    last_official_day = max(official) if official else ""
+    estimate_floor = max(last_official_day, recent_floor)
+
+    # 睡眠区间按「醒来日」分组，供缺失日期估算使用。
+    intervals_by_day: dict[str, list[tuple[int, int]]] = {}
+    for row in db.sleep_samples(start - 86400):
+        stage = str(row.get("value_text") or "")
+        if stage in ("awake", "in_bed"):
+            continue
+        end_ts = int(row["end_ts"])
+        day = _local_date(end_ts)
+        if day < dates[0] or day > dates[-1]:
+            continue
+        intervals_by_day.setdefault(day, []).append((int(row["start_ts"]), end_ts))
+
+    series: list[dict[str, Any]] = []
+    for day in dates:
+        if day in official:
+            series.append({"date": day, "value": official[day], "estimated": False})
+            continue
+        if day <= estimate_floor:
+            series.append({"date": day, "value": None, "estimated": False})
+            continue
+        estimate = _estimate_resting_hr_for_day(db, day, intervals_by_day.get(day, []))
+        series.append(
+            {"date": day, "value": estimate, "estimated": estimate is not None}
+        )
+    return series
 
 
 def series_stats(points: list[dict[str, Any]], cumulative: bool) -> dict[str, Any]:

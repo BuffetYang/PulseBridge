@@ -56,6 +56,10 @@ PulsHealth 是一款开源、免费的 iPhone App（App Store 免费下载），
 在 **Health Access** 页面允许对应类别。若更想要静息心率、HRV、血氧或体重，
 可以替换上表中的某一项；免费版总数仍是 5 类。
 
+> 如果没有勾选静息心率，PulseBridge 会在官方样本缺失的日期用**睡眠期间的心率估算**，
+> 界面上显示为 `≈` 和「估算」。这是近似值（与 Apple 算法一般相差几 bpm），
+> 需要精确数据时仍建议勾选 Resting Heart Rate。
+
 ## 4. 开启自动同步
 
 PulsHealth 通过 HealthKit 后台投递 + 后台任务上传，无需快捷指令：

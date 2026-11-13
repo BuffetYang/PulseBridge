@@ -123,6 +123,73 @@ def test_sleep_night_picks_best_source(tmp_path) -> None:
     db.close()
 
 
+def test_resting_heart_rate_estimates_from_sleep_hr(tmp_path) -> None:
+    db = Database(tmp_path / "test.db")
+    day_start = start_of_local_day()
+    sleep_start = day_start - 3600  # 昨晚 23:00
+    sleep_end = day_start + 6 * 3600 + 30 * 60  # 今早 06:30
+    db.insert_samples(
+        [
+            {
+                **_sample(
+                    "sleep1", "sleep_analysis", sleep_start, None, value_text="core"
+                ),
+                "end_ts": sleep_end,
+            }
+        ]
+    )
+    # 睡眠期间 30 个心率样本：50..79 bpm
+    hr_rows = [
+        _sample(f"hr{i}", "heart_rate", sleep_start + 600 + i * 600, 50.0 + i, unit="count/min")
+        for i in range(30)
+    ]
+    db.insert_samples(hr_rows)
+
+    series = analytics.resting_heart_rate_series(db, 2)
+    today = series[-1]
+    assert today["estimated"] is True
+    assert today["value"] is not None
+    assert 69.0 <= today["value"] <= 71.5  # 睡眠心率的 70% 分位
+    db.close()
+
+
+def test_resting_heart_rate_official_beats_estimate(tmp_path) -> None:
+    db = Database(tmp_path / "test.db")
+    day_start = start_of_local_day()
+    db.insert_samples(
+        [
+            _sample(
+                "rest1",
+                "resting_heart_rate",
+                day_start + 60,
+                61.0,
+                unit="count/min",
+            )
+        ]
+    )
+    series = analytics.resting_heart_rate_series(db, 2)
+    today = series[-1]
+    assert today["estimated"] is False
+    assert today["value"] == 61.0
+    db.close()
+
+
+def test_resting_heart_rate_falls_back_to_night_window(tmp_path) -> None:
+    db = Database(tmp_path / "test.db")
+    day_start = start_of_local_day()
+    hr_rows = [
+        _sample(f"n{i}", "heart_rate", day_start + 600 + i * 600, 55.0 + i, unit="count/min")
+        for i in range(30)
+    ]
+    db.insert_samples(hr_rows)
+    series = analytics.resting_heart_rate_series(db, 2)
+    today = series[-1]
+    assert today["estimated"] is True
+    assert today["value"] is not None
+    assert 70.0 <= today["value"] <= 76.0
+    db.close()
+
+
 def test_daily_series_fills_missing_days(tmp_path) -> None:
     db = Database(tmp_path / "test.db")
     rows = analytics.daily_series(db, "steps", 7)
