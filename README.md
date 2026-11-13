@@ -9,12 +9,19 @@ PulseBridge 让你的 iPhone / Apple Watch 健康与运动数据自动出现在 
 
 - **完全免费**：PulsHealth 免费版即可自动同步 5 类数据；也支持纯系统快捷指令，无需付费 App。
 - **本地优先**：数据只存在你的电脑上，不上传云端，不注册账号。
+- **指标库**：自动展示数据库中的全部指标（Apple 导出可达 40+ 种），支持搜索与趋势跳转。
+- **活动圆环与睡眠详情**：Move / Exercise / Stand 圆环、睡眠阶段时间轴、夜间趋势。
 - **开箱即用**：单个桌面程序，内置接收服务、托盘常驻、开机自启、二维码配对。
 - **为 AI 打底**：结构化存储 + 一键导出 JSON，后续可接入大模型做健康分析。
 
 <p align="center">
   <img src="docs/screenshots/dashboard.png" width="49%" alt="仪表盘">
   <img src="docs/screenshots/sync.png" width="49%" alt="同步与配对">
+</p>
+
+<p align="center">
+  <img src="docs/screenshots/metrics.png" width="49%" alt="指标库">
+  <img src="docs/screenshots/sleep.png" width="49%" alt="睡眠详情">
 </p>
 
 <p align="center">
@@ -31,9 +38,10 @@ PulseBridge 让你的 iPhone / Apple Watch 健康与运动数据自动出现在 
             │  HealthKit
             ▼
  ┌──────────────────────────────┐
- │ iPhone 端（二选一）           │
+ │ iPhone 端（三选一/可组合）     │
  │ ① PulsHealth（免费，自动同步）│── POST /v1/batches (gzip NDJSON) ─┐
  │ ② iOS 快捷指令（系统自带）    │── POST /api/ingest (JSON) ─────────┤
+ │ ③ Apple Health 导出 zip        │── 设置 → 导入（全量历史）──────────┤
  └──────────────────────────────┘                                   │
                                                                      ▼
  ┌─────────────────────────────────────────────────────────────────────┐
@@ -50,8 +58,10 @@ PulseBridge 让你的 iPhone / Apple Watch 健康与运动数据自动出现在 
 
 ## 功能
 
-- **仪表盘**：今日步数、静息心率、最近睡眠、活动能量；24 小时心率曲线、7 天步数、
+- **仪表盘**：今日步数、静息心率、最近睡眠、活动能量；活动圆环；24 小时心率、7 天步数、
   睡眠阶段分布、最近运动。
+- **指标库**：全部已入库指标的最新值、样本量、7 天迷你趋势，支持搜索与趋势跳转。
+- **睡眠详情**：阶段时间轴（Hypnogram）、7/30 夜构成、手腕温度、呼吸紊乱、睡眠目标。
 - **趋势**：9 种指标的 7 / 30 / 90 天趋势，自动区分「按日累计」与「按日平均」。
 - **运动记录**：跑步、骑行、力量训练等，含时长、距离、消耗、平均心率。
 - **同步与配对**：局域网地址、Token、二维码、最近同步日志、已接收指标统计。
@@ -199,8 +209,8 @@ src/pulsebridge/
 ├── guide.py          # 应用内快捷指令指南
 └── ui/
     ├── main_window.py# 侧边栏 / 页面栈 / 托盘
-    ├── pages.py      # 仪表盘、趋势、运动、同步、AI、设置
-    ├── charts.py     # 自绘折线 / 柱状 / 迷你图 / 睡眠阶段条
+    ├── pages.py      # 仪表盘、趋势、指标库、睡眠、运动、同步、AI、设置
+    ├── charts.py     # 自绘折线 / 柱状 / 迷你图 / 圆环 / Hypnogram
     ├── widgets.py    # 卡片、指标卡、复制行、空状态
     ├── theme.py      # 深色主题 QSS
     └── icons.py      # 程序图标

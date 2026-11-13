@@ -14,9 +14,14 @@ CUMULATIVE_TYPES = {
     "active_energy",
     "basal_energy",
     "exercise_minutes",
+    "stand_minutes",
     "stand_hours",
     "flights_climbed",
     "distance",
+    "distance_cycling",
+    "daylight_minutes",
+    "swimming_distance",
+    "swimming_strokes",
     "dietary_energy",
 }
 
@@ -41,7 +46,19 @@ METRIC_META: dict[str, dict[str, Any]] = {
         "digits": 0,
         "cumulative": False,
     },
+    "walking_heart_rate": {
+        "label": "步行平均心率",
+        "unit": "bpm",
+        "digits": 0,
+        "cumulative": False,
+    },
     "hrv": {"label": "心率变异性", "unit": "ms", "digits": 0, "cumulative": False},
+    "heart_rate_recovery": {
+        "label": "1 分钟心率恢复",
+        "unit": "bpm",
+        "digits": 0,
+        "cumulative": False,
+    },
     "active_energy": {"label": "活动能量", "unit": "kcal", "digits": 0, "cumulative": True},
     "basal_energy": {"label": "静息能量", "unit": "kcal", "digits": 0, "cumulative": True},
     "exercise_minutes": {
@@ -50,20 +67,223 @@ METRIC_META: dict[str, dict[str, Any]] = {
         "digits": 0,
         "cumulative": True,
     },
+    "stand_minutes": {
+        "label": "站立时间",
+        "unit": "分钟",
+        "digits": 0,
+        "cumulative": True,
+    },
     "stand_hours": {"label": "站立时间", "unit": "小时", "digits": 0, "cumulative": True},
-    "oxygen_saturation": {"label": "血氧", "unit": "%", "digits": 1, "cumulative": False},
+    "oxygen_saturation": {
+        "label": "血氧",
+        "unit": "%",
+        "digits": 0,
+        "cumulative": False,
+        "scale": 100,
+    },
     "respiratory_rate": {
         "label": "呼吸频率",
         "unit": "次/分",
         "digits": 1,
         "cumulative": False,
     },
-    "vo2max": {"label": "最大摄氧量", "unit": "ml/kg/min", "digits": 1, "cumulative": False},
+    "vo2max": {"label": "最大摄氧量", "unit": "mL/min·kg", "digits": 1, "cumulative": False},
     "body_mass": {"label": "体重", "unit": "kg", "digits": 1, "cumulative": False},
+    "body_fat": {
+        "label": "体脂率",
+        "unit": "%",
+        "digits": 1,
+        "cumulative": False,
+        "scale": 100,
+    },
+    "bmi": {"label": "BMI", "unit": "", "digits": 1, "cumulative": False},
+    "waist": {"label": "腰围", "unit": "cm", "digits": 1, "cumulative": False},
+    "height": {"label": "身高", "unit": "cm", "digits": 0, "cumulative": False},
     "sleep": {"label": "睡眠", "unit": "小时", "digits": 1, "cumulative": False},
+    "sleep_goal": {"label": "睡眠目标", "unit": "小时", "digits": 1, "cumulative": False},
+    "wrist_temperature": {
+        "label": "手腕温度",
+        "unit": "°C",
+        "digits": 1,
+        "cumulative": False,
+    },
+    "breathing_disturbances": {
+        "label": "睡眠呼吸紊乱",
+        "unit": "次",
+        "digits": 2,
+        "cumulative": False,
+    },
     "distance": {"label": "步行+跑步距离", "unit": "km", "digits": 2, "cumulative": True},
+    "distance_cycling": {"label": "骑行距离", "unit": "km", "digits": 2, "cumulative": True},
     "flights_climbed": {"label": "爬楼层数", "unit": "层", "digits": 0, "cumulative": True},
+    "walking_speed": {"label": "步速", "unit": "km/h", "digits": 2, "cumulative": False},
+    "walking_step_length": {
+        "label": "步长",
+        "unit": "cm",
+        "digits": 1,
+        "cumulative": False,
+    },
+    "walking_double_support": {
+        "label": "双支撑占比",
+        "unit": "%",
+        "digits": 1,
+        "cumulative": False,
+        "scale": 100,
+    },
+    "walking_asymmetry": {
+        "label": "步行不对称",
+        "unit": "%",
+        "digits": 1,
+        "cumulative": False,
+        "scale": 100,
+    },
+    "walking_steadiness": {
+        "label": "步行稳定性",
+        "unit": "%",
+        "digits": 0,
+        "cumulative": False,
+        "scale": 100,
+    },
+    "six_minute_walk": {
+        "label": "6 分钟步行",
+        "unit": "m",
+        "digits": 0,
+        "cumulative": False,
+    },
+    "stair_ascent_speed": {
+        "label": "上楼速度",
+        "unit": "m/s",
+        "digits": 2,
+        "cumulative": False,
+    },
+    "stair_descent_speed": {
+        "label": "下楼速度",
+        "unit": "m/s",
+        "digits": 2,
+        "cumulative": False,
+    },
+    "headphone_audio": {
+        "label": "耳机音量",
+        "unit": "dB",
+        "digits": 0,
+        "cumulative": False,
+    },
+    "environmental_audio": {
+        "label": "环境音量",
+        "unit": "dB",
+        "digits": 0,
+        "cumulative": False,
+    },
+    "daylight_minutes": {
+        "label": "日照时间",
+        "unit": "分钟",
+        "digits": 0,
+        "cumulative": True,
+    },
+    "physical_effort": {
+        "label": "体力活动",
+        "unit": "kcal/hr·kg",
+        "digits": 1,
+        "cumulative": False,
+    },
+    "workout_effort": {
+        "label": "运动努力",
+        "unit": "分",
+        "digits": 0,
+        "cumulative": False,
+    },
+    "estimated_workout_effort": {
+        "label": "估算运动努力",
+        "unit": "分",
+        "digits": 0,
+        "cumulative": False,
+    },
+    "swimming_distance": {
+        "label": "游泳距离",
+        "unit": "m",
+        "digits": 0,
+        "cumulative": True,
+    },
+    "swimming_strokes": {
+        "label": "划水次数",
+        "unit": "次",
+        "digits": 0,
+        "cumulative": True,
+    },
+    "mindful_minutes": {
+        "label": "正念",
+        "unit": "次",
+        "digits": 0,
+        "cumulative": True,
+    },
+    "stand_hour": {"label": "站立小时", "unit": "", "digits": 0, "cumulative": False},
+    "audio_exposure_event": {"label": "音量超限事件", "unit": "", "digits": 0, "cumulative": False},
+    "headphone_audio_event": {"label": "耳机音量超限", "unit": "", "digits": 0, "cumulative": False},
 }
+
+METRIC_ORDER = [
+    "steps",
+    "heart_rate",
+    "resting_heart_rate",
+    "hrv",
+    "sleep",
+    "active_energy",
+    "basal_energy",
+    "exercise_minutes",
+    "stand_minutes",
+    "distance",
+    "distance_cycling",
+    "walking_speed",
+    "walking_step_length",
+    "walking_double_support",
+    "walking_asymmetry",
+    "walking_steadiness",
+    "six_minute_walk",
+    "oxygen_saturation",
+    "respiratory_rate",
+    "vo2max",
+    "heart_rate_recovery",
+    "walking_heart_rate",
+    "wrist_temperature",
+    "breathing_disturbances",
+    "sleep_goal",
+    "body_mass",
+    "body_fat",
+    "bmi",
+    "waist",
+    "height",
+    "headphone_audio",
+    "environmental_audio",
+    "daylight_minutes",
+    "physical_effort",
+    "workout_effort",
+    "estimated_workout_effort",
+    "stair_ascent_speed",
+    "stair_descent_speed",
+    "swimming_distance",
+    "swimming_strokes",
+    "flights_climbed",
+]
+
+
+def metric_meta(metric: str) -> dict[str, Any]:
+    meta = METRIC_META.get(metric)
+    if meta is not None:
+        return meta
+    label = metric.replace("_", " ").strip()
+    if label:
+        label = label[0].upper() + label[1:]
+    return {"label": label or metric, "unit": "", "digits": 1, "cumulative": False}
+
+
+def display_value(metric: str, value: float | None) -> float | None:
+    """百分比类 Apple 数据可能以 0–1 的小数存储，展示时统一成百分数。"""
+    if value is None:
+        return None
+    meta = METRIC_META.get(metric, {})
+    if meta.get("scale") == 100 and 0 <= value <= 1.0:
+        return value * 100
+    return value
 
 
 def date_range(days: int) -> list[str]:
@@ -217,6 +437,30 @@ def last_night(db: Database) -> dict[str, Any] | None:
     if latest["asleep_min"] <= 0 and latest["in_bed_min"] <= 0:
         return None
     return latest
+
+
+def sleep_segments(db: Database, night: dict[str, Any] | None) -> list[tuple[int, int, str]]:
+    """某一夜的阶段片段，用于 hypnogram。"""
+    if not night:
+        return []
+    start_limit = int(night["start_ts"])
+    end_limit = int(night["end_ts"])
+    source = night.get("source")
+    rows = db.sleep_samples(start_limit - 3600)
+    segments: list[tuple[int, int, str]] = []
+    for row in rows:
+        if source and row.get("source") != source:
+            continue
+        start = max(int(row["start_ts"]), start_limit)
+        end = min(int(row["end_ts"]), end_limit)
+        if end <= start:
+            continue
+        stage = row.get("value_text") or "asleep_unspecified"
+        if stage == "in_bed":
+            continue
+        segments.append((start, end, stage))
+    segments.sort()
+    return segments
 
 
 def sleep_minutes_today(db: Database) -> float:

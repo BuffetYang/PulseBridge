@@ -29,8 +29,8 @@ def test_main_window_builds(tmp_path) -> None:
     window.show()
     app.processEvents()
 
-    assert window.stack.count() == 6
-    for index in range(6):
+    assert window.stack.count() == 8
+    for index in range(8):
         window.navigate(index)
         app.processEvents()
 

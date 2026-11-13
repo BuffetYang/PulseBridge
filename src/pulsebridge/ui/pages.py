@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
     QDialog,
     QFileDialog,
     QFrame,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -34,6 +35,7 @@ from PySide6.QtWidgets import (
     QProgressDialog,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QStackedWidget,
     QTextBrowser,
     QTimeEdit,
@@ -64,7 +66,15 @@ from ..util import (
     primary_lan_ip,
     weekday_label,
 )
-from .charts import BarChart, LineChart, StageBar
+from .charts import (
+    BarChart,
+    Hypnogram,
+    LineChart,
+    RingMetric,
+    SleepStagesChart,
+    Sparkline,
+    StageBar,
+)
 from .theme import COLORS
 from .widgets import (
     Card,
@@ -289,6 +299,7 @@ class DashboardPage(QWidget):
         open_workouts: Callable[[], None],
         open_trend: Callable[[str], None] | None = None,
         open_sync: Callable[[], None] | None = None,
+        open_sleep: Callable[[], None] | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -298,6 +309,7 @@ class DashboardPage(QWidget):
         self.open_workouts = open_workouts
         self.open_trend = open_trend
         self.open_sync = open_sync
+        self.open_sleep = open_sleep
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -333,6 +345,27 @@ class DashboardPage(QWidget):
                 lambda: self.open_trend("active_energy"), "查看活动能量趋势"
             )
         layout.addLayout(metrics)
+
+        self.activity_card = Card()
+        activity_header = QHBoxLayout()
+        activity_title = QLabel("活动圆环")
+        activity_title.setObjectName("cardTitle")
+        activity_header.addWidget(activity_title)
+        activity_header.addStretch(1)
+        self.activity_date_label = QLabel("今日活动")
+        self.activity_date_label.setObjectName("cardSub")
+        activity_header.addWidget(self.activity_date_label)
+        self.activity_card.body.addLayout(activity_header)
+
+        rings = QHBoxLayout()
+        rings.setSpacing(8)
+        self.ring_move = RingMetric("活动能量", "kcal", COLORS["pink"], 0)
+        self.ring_exercise = RingMetric("锻炼", "分钟", COLORS["accent"], 0)
+        self.ring_stand = RingMetric("站立", "小时", COLORS["blue"], 1)
+        for ring in (self.ring_move, self.ring_exercise, self.ring_stand):
+            rings.addWidget(ring, 1)
+        self.activity_card.body.addLayout(rings)
+        layout.addWidget(self.activity_card)
 
         charts = QHBoxLayout()
         charts.setSpacing(14)
@@ -403,7 +436,8 @@ class DashboardPage(QWidget):
                 lambda: self.open_trend("steps"), "查看步数趋势"
             )
             self.sleep_card.set_click_handler(
-                lambda: self.open_trend("sleep"), "查看睡眠趋势"
+                self.open_sleep or (lambda: self.open_trend("sleep")),
+                "查看睡眠详情",
             )
 
         self.refresh()
@@ -510,6 +544,32 @@ class DashboardPage(QWidget):
 
         # 睡眠卡
         self._refresh_sleep_card(night)
+        self._refresh_activity_rings()
+
+    def _refresh_activity_rings(self) -> None:
+        summary = self.db.latest_activity_summary()
+        today = datetime.now().strftime("%Y-%m-%d")
+        if summary:
+            date_text = str(summary.get("date") or "")
+            self.activity_date_label.setText(
+                "今日活动" if date_text == today else f"最近活动 · {local_date_label(date_text)}"
+            )
+            move = float(summary.get("move_kcal") or 0)
+            exercise = float(summary.get("exercise_min") or 0)
+            stand = float(summary.get("stand_hours") or 0)
+            move_goal = float(summary.get("move_goal_kcal") or 0)
+            exercise_goal = float(summary.get("exercise_goal_min") or 0)
+            stand_goal = float(summary.get("stand_goal_hours") or 0)
+        else:
+            self.activity_date_label.setText("今日活动")
+            move = analytics.today_cumulative(self.db, "active_energy")
+            exercise = analytics.today_cumulative(self.db, "exercise_minutes")
+            stand = analytics.today_cumulative(self.db, "stand_minutes") / 60.0
+            move_goal = exercise_goal = stand_goal = 0
+
+        self.ring_move.set_data(move, move_goal or 500)
+        self.ring_exercise.set_data(exercise, exercise_goal or 30)
+        self.ring_stand.set_data(stand, stand_goal or 12)
 
     def _refresh_status(self, stats: dict[str, Any]) -> None:
         if not self.controller.running:
@@ -573,17 +633,32 @@ def _link_button(text: str, callback: Callable[[], None]) -> QPushButton:
 # 趋势
 # ---------------------------------------------------------------------------
 
-_TREND_METRICS = [
-    ("steps", "步数"),
-    ("heart_rate", "心率（日均）"),
-    ("resting_heart_rate", "静息心率"),
-    ("hrv", "心率变异性"),
-    ("sleep", "睡眠时长"),
-    ("active_energy", "活动能量"),
-    ("oxygen_saturation", "血氧"),
-    ("respiratory_rate", "呼吸频率"),
-    ("body_mass", "体重"),
-]
+_NON_NUMERIC_METRICS = {
+    "stand_hour",
+    "audio_exposure_event",
+    "headphone_audio_event",
+    "mindful_minutes",
+}
+
+
+def _available_trend_metrics(db: Database) -> list[tuple[str, str]]:
+    counts = db.sample_type_counts()
+    options: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for key in analytics.METRIC_ORDER:
+        count_key = "sleep_analysis" if key == "sleep" else key
+        if counts.get(count_key):
+            meta = analytics.metric_meta(key)
+            options.append((key, meta["label"]))
+            seen.add(key)
+    for key, _count in counts.items():
+        if key in seen or key == "sleep_analysis" or key in _NON_NUMERIC_METRICS:
+            continue
+        if key in analytics.METRIC_META:
+            options.append((key, analytics.METRIC_META[key]["label"]))
+    if not options:
+        options = [("steps", "步数"), ("heart_rate", "心率")]
+    return options
 
 
 class TrendsPage(QWidget):
@@ -600,9 +675,8 @@ class TrendsPage(QWidget):
         toolbar = QHBoxLayout()
         toolbar.setSpacing(8)
         self.metric_combo = QComboBox()
-        for key, label in _TREND_METRICS:
-            self.metric_combo.addItem(label, key)
-        self.metric_combo.setFixedWidth(170)
+        self._load_trend_metrics()
+        self.metric_combo.setFixedWidth(190)
         self.metric_combo.currentIndexChanged.connect(self.refresh)
         toolbar.addWidget(self.metric_combo)
         toolbar.addSpacing(8)
@@ -644,22 +718,46 @@ class TrendsPage(QWidget):
 
         QTimer.singleShot(0, self.refresh)
 
+    def _load_trend_metrics(self) -> None:
+        options = _available_trend_metrics(self.db)
+        current = self.metric_combo.currentData()
+        existing = [
+            (self.metric_combo.itemData(index), self.metric_combo.itemText(index))
+            for index in range(self.metric_combo.count())
+        ]
+        if existing == options and (
+            current is None or any(key == current for key, _ in options)
+        ):
+            return
+        self.metric_combo.blockSignals(True)
+        self.metric_combo.clear()
+        for key, label in options:
+            self.metric_combo.addItem(label, key)
+        index = self.metric_combo.findData(current)
+        if index < 0:
+            index = 0
+        self.metric_combo.setCurrentIndex(index)
+        self.metric_combo.blockSignals(False)
+
     def _set_range(self, days: int) -> None:
         self.days = days
         self.refresh()
 
     def select_metric(self, metric: str) -> None:
-        """供仪表盘卡片跳转：切到指定指标并刷新。"""
+        """供仪表盘/指标库跳转：切到指定指标并刷新。"""
+        self._load_trend_metrics()
         index = self.metric_combo.findData(metric)
         if index >= 0:
             self.metric_combo.setCurrentIndex(index)
             self.refresh()
 
     def refresh(self) -> None:
-        metric = self.metric_combo.currentData()
-        meta = analytics.METRIC_META.get(metric, {"label": metric, "unit": "", "digits": 1})
+        self._load_trend_metrics()
+        metric = self.metric_combo.currentData() or "steps"
+        meta = analytics.metric_meta(metric)
         points = analytics.daily_series(self.db, metric, self.days)
-        values = [p["value"] for p in points]
+        raw_values = [p["value"] for p in points]
+        values = [analytics.display_value(metric, value) for value in raw_values]
         unit = meta["unit"]
         digits = int(meta["digits"])
         is_sleep = metric == "sleep"
@@ -681,7 +779,7 @@ class TrendsPage(QWidget):
             chart.set_empty_text(f"近 {self.days} 天暂无{meta['label']}数据")
         else:
             chart = self.line
-            chart.set_data(_to_timestamp_points(points), unit)
+            chart.set_data(_to_timestamp_points(points, metric), unit)
             chart.set_empty_text(f"近 {self.days} 天暂无{meta['label']}数据")
         self.stack.setCurrentWidget(chart)
 
@@ -708,10 +806,12 @@ class TrendsPage(QWidget):
             self.stat_3.findChild(QLabel, "subtle").setText("最低")
 
 
-def _to_timestamp_points(points: list[dict[str, Any]]) -> list[tuple[float, float]]:
+def _to_timestamp_points(
+    points: list[dict[str, Any]], metric: str = ""
+) -> list[tuple[float, float]]:
     result: list[tuple[float, float]] = []
     for point in points:
-        value = point.get("value")
+        value = analytics.display_value(metric, point.get("value"))
         if value is None:
             continue
         try:
@@ -720,6 +820,488 @@ def _to_timestamp_points(points: list[dict[str, Any]]) -> list[tuple[float, floa
             continue
         result.append((ts, float(value)))
     return result
+
+
+# ---------------------------------------------------------------------------
+# 指标库
+# ---------------------------------------------------------------------------
+
+def _metric_color(type_: str) -> str:
+    if any(part in type_ for part in ("heart", "hrv", "oxygen", "respiratory")):
+        return COLORS["pink"]
+    if "sleep" in type_ or "breathing" in type_:
+        return COLORS["purple"]
+    if any(part in type_ for part in ("energy", "effort", "audio", "daylight")):
+        return COLORS["orange"]
+    if any(
+        part in type_
+        for part in ("walking", "steps", "distance", "swim", "stair", "flights", "stand")
+    ):
+        return COLORS["accent"]
+    if any(part in type_ for part in ("body", "mass", "bmi", "waist", "height", "fat")):
+        return COLORS["blue"]
+    return COLORS["cyan"]
+
+
+class MetricTile(Card):
+    def __init__(self, color: str, parent: QWidget | None = None) -> None:
+        super().__init__(parent, margins=(16, 14, 16, 12))
+        self.setMinimumHeight(136)
+        self.setMinimumWidth(220)
+        top = QHBoxLayout()
+        top.setSpacing(8)
+        self.title_label = QLabel("")
+        self.title_label.setObjectName("cardTitle")
+        top.addWidget(self.title_label)
+        top.addStretch(1)
+        self.count_label = QLabel("")
+        self.count_label.setObjectName("chip")
+        top.addWidget(self.count_label)
+        self.body.addLayout(top)
+
+        value_row = QHBoxLayout()
+        value_row.setSpacing(6)
+        self.value_label = QLabel("--")
+        self.value_label.setStyleSheet("font-size: 24px; font-weight: 700;")
+        value_row.addWidget(self.value_label, 0, Qt.AlignmentFlag.AlignBaseline)
+        self.unit_label = QLabel("")
+        self.unit_label.setObjectName("metricUnit")
+        value_row.addWidget(self.unit_label, 0, Qt.AlignmentFlag.AlignBaseline)
+        value_row.addStretch(1)
+        self.body.addLayout(value_row)
+
+        self.sub_label = QLabel("")
+        self.sub_label.setObjectName("subtle")
+        self.sub_label.setWordWrap(True)
+        self.sub_label.setSizePolicy(
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred
+        )
+        self.body.addWidget(self.sub_label)
+
+        self.spark = Sparkline(color)
+        self.body.addWidget(self.spark)
+        self.body.addStretch(1)
+
+    def set_data(
+        self,
+        title: str,
+        value: str,
+        unit: str,
+        count: int,
+        subtitle: str,
+        spark: list[float | None],
+    ) -> None:
+        self.title_label.setText(title)
+        self.value_label.setText(value)
+        self.unit_label.setText(unit)
+        self.count_label.setText(f"{count:,} 条")
+        self.sub_label.setText(subtitle)
+        self.spark.set_values(spark)
+
+
+class MetricsPage(QWidget):
+    def __init__(
+        self,
+        db: Database,
+        on_open_trend: Callable[[str], None],
+        on_open_sleep: Callable[[], None] | None = None,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.db = db
+        self.on_open_trend = on_open_trend
+        self.on_open_sleep = on_open_sleep
+        self.tiles: list[tuple[MetricTile, str]] = []
+        self._signature: tuple | None = None
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        layout = _make_scroll(outer)
+        layout.addLayout(_header("指标库", "当前数据库里的全部健康指标"))
+
+        toolbar = QHBoxLayout()
+        toolbar.setSpacing(10)
+        self.search = QLineEdit()
+        self.search.setPlaceholderText("搜索指标，例如 步速、血氧、睡眠…")
+        self.search.setMaximumWidth(330)
+        self.search.textChanged.connect(self._filter)
+        toolbar.addWidget(self.search)
+        toolbar.addStretch(1)
+        self.summary = QLabel("")
+        self.summary.setObjectName("subtle")
+        toolbar.addWidget(self.summary)
+        layout.addLayout(toolbar)
+
+        self.grid_host = QWidget()
+        self.grid = QGridLayout(self.grid_host)
+        self.grid.setContentsMargins(0, 0, 0, 0)
+        self.grid.setSpacing(14)
+        layout.addWidget(self.grid_host)
+        self.empty = EmptyState(
+            "📚", "还没有可展示的指标", "导入 Apple Health 导出或连接 PulsHealth 后即可看到"
+        )
+        layout.addWidget(self.empty)
+        layout.addStretch(1)
+
+    def refresh(self) -> None:
+        counts = self.db.sample_type_counts()
+        signature = tuple(sorted(counts.items()))
+        if signature == self._signature:
+            return
+        self._signature = signature
+        self._rebuild(counts)
+
+    def _rebuild(self, counts: dict[str, int]) -> None:
+        while self.grid.count():
+            item = self.grid.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+        self.tiles.clear()
+        self.empty.setVisible(not counts)
+        if not counts:
+            self.summary.setText("")
+            return
+
+        trend_keys = {key for key, _label in _available_trend_metrics(self.db)}
+        entries = []
+        for type_, count in counts.items():
+            if type_ == "sleep_analysis":
+                night = analytics.last_night(self.db)
+                meta = analytics.METRIC_META["sleep"]
+                series = analytics.daily_series(self.db, "sleep", 7)
+                value = night["asleep_min"] / 60.0 if night else None
+                subtitle_date = night["date"] if night else ""
+                trend_key = "sleep" if "sleep" in trend_keys else None
+                label = "睡眠"
+                unit = "小时"
+                digits = 1
+            else:
+                meta = analytics.METRIC_META.get(type_) or analytics.metric_meta(type_)
+                label = meta["label"]
+                unit = meta.get("unit", "")
+                digits = int(meta.get("digits", 1))
+                series = (
+                    analytics.daily_series(self.db, type_, 7)
+                    if type_ in analytics.METRIC_META
+                    and type_ not in _NON_NUMERIC_METRICS
+                    else []
+                )
+                last_point = next(
+                    (p for p in reversed(series) if p["value"] is not None), None
+                )
+                value = analytics.display_value(
+                    type_, last_point["value"] if last_point else None
+                )
+                subtitle_date = last_point["date"] if last_point else ""
+                trend_key = type_ if type_ in trend_keys else None
+
+            latest = self.db.latest_sample(type_)
+            known_meta = type_ == "sleep_analysis" or type_ in analytics.METRIC_META
+            if value is None and latest is not None:
+                text_value = latest.get("value_text")
+                display_value = text_value or "--"
+                if not known_meta:
+                    unit = latest.get("unit") or unit or ""
+            else:
+                display_value = fmt_float(value, digits) if value is not None else "--"
+                if not known_meta and latest and latest.get("unit"):
+                    unit = latest["unit"]
+
+            spark = [
+                analytics.display_value(type_, p["value"]) for p in series
+            ] if series else [None]
+            subtitle_parts = [f"{count:,} 条"]
+            if subtitle_date:
+                subtitle_parts.append(f"最近 {local_date_label(subtitle_date)}")
+            source_text = ""
+            if latest and latest.get("source"):
+                source_text = str(latest["source"]).replace("\xa0", " ")
+            meta_available = type_ in analytics.METRIC_META or type_ == "sleep_analysis"
+            entries.append(
+                {
+                    "type": type_,
+                    "label": label,
+                    "value": display_value,
+                    "unit": unit,
+                    "count": count,
+                    "subtitle": " · ".join(subtitle_parts),
+                    "source": source_text,
+                    "spark": spark,
+                    "trend": trend_key if meta_available else None,
+                }
+            )
+
+        def sort_key(item: dict) -> tuple[int, str]:
+            type_ = item["type"]
+            order_key = "sleep" if type_ == "sleep_analysis" else type_
+            if order_key in analytics.METRIC_ORDER:
+                return (analytics.METRIC_ORDER.index(order_key), item["label"])
+            return (len(analytics.METRIC_ORDER), item["label"])
+
+        entries.sort(key=sort_key)
+        for index, entry in enumerate(entries):
+            tile = MetricTile(_metric_color(entry["type"]))
+            tile.set_data(
+                entry["label"],
+                entry["value"],
+                entry["unit"],
+                entry["count"],
+                entry["subtitle"],
+                entry["spark"],
+            )
+            search_text = f"{entry['label']} {entry['type']}".lower()
+            trend_key = entry["trend"]
+            tooltip = (
+                f"{entry['source']} · {entry['type']}"
+                if entry.get("source")
+                else entry["type"]
+            )
+            tile.setToolTip(tooltip)
+            if trend_key:
+                if trend_key == "sleep" and self.on_open_sleep:
+                    tile.set_click_handler(self.on_open_sleep, "查看睡眠详情")
+                else:
+                    tile.set_click_handler(
+                        lambda key=trend_key: self.on_open_trend(key),
+                        "查看趋势",
+                    )
+            self.grid.addWidget(tile, index // 3, index % 3)
+            self.tiles.append((tile, search_text))
+
+        for column in range(3):
+            self.grid.setColumnStretch(column, 1)
+        self.summary.setText(f"共 {len(entries)} 种指标 · 点击卡片查看详情")
+        self._filter(self.search.text())
+
+    def _filter(self, text: str) -> None:
+        needle = text.strip().lower()
+        for tile, search_text in self.tiles:
+            tile.setVisible(not needle or needle in search_text)
+
+
+class SleepPage(QWidget):
+    def __init__(self, db: Database, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.db = db
+        self.days = 7
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        layout = _make_scroll(outer)
+        layout.addLayout(_header("睡眠", "阶段、时长与夜间趋势"))
+
+        range_row = QHBoxLayout()
+        range_row.setSpacing(8)
+        self.range_group = QButtonGroup(self)
+        self.range_group.setExclusive(True)
+        for index, (days, label) in enumerate(((7, "近 7 夜"), (30, "近 30 夜"))):
+            button = QPushButton(label)
+            button.setObjectName("chipButton")
+            button.setCheckable(True)
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
+            button.setChecked(days == 7)
+            button.clicked.connect(lambda _=False, d=days: self._set_range(d))
+            self.range_group.addButton(button, index)
+            range_row.addWidget(button)
+        range_row.addStretch(1)
+        layout.addLayout(range_row)
+
+        stats_row = QHBoxLayout()
+        stats_row.setSpacing(12)
+        self.stat_sleep, self.stat_sleep_value = _stat_tile("平均睡眠")
+        self.stat_eff, self.stat_eff_value = _stat_tile("平均效率")
+        self.stat_deep, self.stat_deep_value = _stat_tile("深睡占比")
+        for tile in (self.stat_sleep, self.stat_eff, self.stat_deep):
+            stats_row.addWidget(tile, 1)
+        layout.addLayout(stats_row)
+
+        self.last_card = Card()
+        self.last_title = QLabel("最近一夜")
+        self.last_title.setObjectName("cardTitle")
+        self.last_date = QLabel("")
+        self.last_date.setObjectName("cardSub")
+        header = QHBoxLayout()
+        header.addWidget(self.last_title)
+        header.addStretch(1)
+        header.addWidget(self.last_date)
+        self.last_card.body.addLayout(header)
+
+        value_row = QHBoxLayout()
+        value_row.setSpacing(6)
+        self.last_value = QLabel("--")
+        self.last_value.setObjectName("bigValue")
+        self.last_unit = QLabel("小时")
+        self.last_unit.setObjectName("metricUnit")
+        self.last_eff = QLabel("")
+        self.last_eff.setObjectName("chip")
+        value_row.addWidget(self.last_value)
+        value_row.addWidget(self.last_unit, 0, Qt.AlignmentFlag.AlignBottom)
+        value_row.addStretch(1)
+        value_row.addWidget(self.last_eff)
+        self.last_card.body.addLayout(value_row)
+
+        self.last_stage_bar = StageBar()
+        self.last_card.body.addWidget(self.last_stage_bar)
+        self.last_legend = QLabel("")
+        self.last_legend.setWordWrap(True)
+        self.last_legend.setStyleSheet(f"color: {COLORS['muted']}; font-size: 12px;")
+        self.last_card.body.addWidget(self.last_legend)
+        self.last_meta = QLabel("")
+        self.last_meta.setObjectName("subtle")
+        self.last_meta.setWordWrap(True)
+        self.last_card.body.addWidget(self.last_meta)
+        layout.addWidget(self.last_card)
+
+        self.hypnogram = Hypnogram()
+        self.hypno_card = ChartCard("睡眠阶段 · 最近一夜", "深睡 / 核心 / REM / 清醒", self.hypnogram)
+        self.hypno_card.setMinimumHeight(270)
+        layout.addWidget(self.hypno_card)
+
+        self.nights_chart = SleepStagesChart()
+        self.nights_card = ChartCard("睡眠构成", "近 7 夜", self.nights_chart)
+        self.nights_card.setMinimumHeight(280)
+        layout.addWidget(self.nights_card)
+        self.nights_legend = QLabel(
+            f"<span style='color:{SLEEP_COLORS['deep']}'>●</span> 深睡&nbsp;&nbsp;"
+            f"<span style='color:{SLEEP_COLORS['core']}'>●</span> 核心&nbsp;&nbsp;"
+            f"<span style='color:{SLEEP_COLORS['rem']}'>●</span> REM&nbsp;&nbsp;"
+            f"<span style='color:{SLEEP_COLORS['awake']}'>●</span> 清醒"
+        )
+        self.nights_legend.setStyleSheet(f"color: {COLORS['muted']}; font-size: 12px;")
+        layout.addWidget(self.nights_legend)
+
+        extra = QHBoxLayout()
+        extra.setSpacing(14)
+        self.temp_chart = LineChart(COLORS["orange"], "°C")
+        self.temp_chart.setMinimumHeight(150)
+        self.temp_card = ChartCard("手腕温度", "等待数据", self.temp_chart)
+        extra.addWidget(self.temp_card, 1)
+
+        self.breathing_chart = LineChart(COLORS["blue"], "次")
+        self.breathing_chart.setMinimumHeight(150)
+        self.breathing_card = ChartCard("睡眠呼吸紊乱", "等待数据", self.breathing_chart)
+        extra.addWidget(self.breathing_card, 1)
+
+        self.goal_card = Card()
+        self.goal_card.body.addLayout(card_header("睡眠目标", "来自健康 App"))
+        self.goal_value = QLabel("--")
+        self.goal_value.setObjectName("bigValue")
+        self.goal_card.body.addWidget(self.goal_value)
+        self.goal_sub = QLabel("")
+        self.goal_sub.setObjectName("subtle")
+        self.goal_sub.setWordWrap(True)
+        self.goal_card.body.addWidget(self.goal_sub)
+        self.goal_card.body.addStretch(1)
+        extra.addWidget(self.goal_card, 1)
+        layout.addLayout(extra)
+        layout.addStretch(1)
+
+    def _set_range(self, days: int) -> None:
+        self.days = days
+        self.refresh()
+
+    def refresh(self) -> None:
+        nights = analytics.sleep_nights(self.db, self.days)
+        valid = [n for n in nights if n["asleep_min"] > 0]
+        if valid:
+            avg_sleep = sum(n["asleep_min"] for n in valid) / len(valid) / 60
+            avg_eff = sum(n["efficiency"] for n in valid) / len(valid)
+            deep_ratio = (
+                sum(n["deep_min"] for n in valid)
+                / sum(n["asleep_min"] for n in valid)
+                * 100
+                if sum(n["asleep_min"] for n in valid)
+                else 0
+            )
+            self.stat_sleep_value.setText(f"{avg_sleep:.1f} 小时")
+            self.stat_eff_value.setText(f"{avg_eff:.0f}%")
+            self.stat_deep_value.setText(f"{deep_ratio:.0f}%")
+        else:
+            self.stat_sleep_value.setText("--")
+            self.stat_eff_value.setText("--")
+            self.stat_deep_value.setText("--")
+
+        night = analytics.last_night(self.db)
+        if night and night["asleep_min"] > 0:
+            self.last_date.setText(local_date_label(night["date"]))
+            self.last_value.setText(f"{night['asleep_min'] / 60:.1f}")
+            self.last_eff.setText(f"效率 {night['efficiency']:.0f}%")
+            self.last_stage_bar.set_segments(
+                [
+                    (night["deep_min"], SLEEP_COLORS["deep"]),
+                    (night["core_min"], SLEEP_COLORS["core"]),
+                    (night["rem_min"], SLEEP_COLORS["rem"]),
+                    (night["awake_min"], SLEEP_COLORS["awake"]),
+                ]
+            )
+            self.last_legend.setText(
+                f"<span style='color:{SLEEP_COLORS['deep']}'>●</span> 深睡 {night['deep_min']:.0f} 分&nbsp;&nbsp;"
+                f"<span style='color:{SLEEP_COLORS['core']}'>●</span> 核心 {night['core_min']:.0f} 分&nbsp;&nbsp;"
+                f"<span style='color:{SLEEP_COLORS['rem']}'>●</span> REM {night['rem_min']:.0f} 分&nbsp;&nbsp;"
+                f"<span style='color:{SLEEP_COLORS['awake']}'>●</span> 清醒 {night['awake_min']:.0f} 分"
+            )
+            self.last_meta.setText(
+                f"{local_time_label(night['start_ts'])} 入睡 · "
+                f"{local_time_label(night['end_ts'])} 起床 · "
+                f"卧床 {night['in_bed_min'] / 60:.1f} 小时"
+            )
+            segments = analytics.sleep_segments(self.db, night)
+            self.hypnogram.set_data(
+                segments, int(night["start_ts"]), int(night["end_ts"])
+            )
+            self.hypno_card.set_subtitle(
+                f"{local_date_label(night['date'])} · {local_time_label(night['start_ts'])}–{local_time_label(night['end_ts'])}"
+            )
+        else:
+            self.last_date.setText("")
+            self.last_value.setText("--")
+            self.last_eff.setText("")
+            self.last_stage_bar.set_segments([])
+            self.last_legend.setText("还没有睡眠阶段数据")
+            self.last_meta.setText("")
+            self.hypnogram.set_data([], 0, 0)
+            self.hypno_card.set_subtitle("等待睡眠数据")
+
+        self.nights_chart.set_data(nights)
+        self.nights_card.set_subtitle(f"近 {self.days} 夜")
+        self._refresh_auxiliary(self.days)
+
+    def _refresh_auxiliary(self, days: int) -> None:
+        temp_points = analytics.daily_series(self.db, "wrist_temperature", days)
+        temp_values = [
+            analytics.display_value("wrist_temperature", p["value"]) for p in temp_points
+        ]
+        self.temp_chart.set_data(_to_timestamp_points(temp_points, "wrist_temperature"), "°C")
+        temp_last = next((v for v in reversed(temp_values) if v is not None), None)
+        self.temp_card.set_subtitle(
+            f"最近 {fmt_float(temp_last, 1)} °C" if temp_last is not None else "暂无手腕温度数据"
+        )
+
+        breath_points = analytics.daily_series(self.db, "breathing_disturbances", days)
+        breath_values = [
+            analytics.display_value("breathing_disturbances", p["value"])
+            for p in breath_points
+        ]
+        self.breathing_chart.set_data(
+            _to_timestamp_points(breath_points, "breathing_disturbances"), "次"
+        )
+        breath_last = next(
+            (v for v in reversed(breath_values) if v is not None), None
+        )
+        self.breathing_card.set_subtitle(
+            f"最近 {fmt_float(breath_last, 2)} 次"
+            if breath_last is not None
+            else "暂无睡眠呼吸数据"
+        )
+
+        goal = self.db.latest_sample("sleep_goal")
+        if goal and goal.get("value"):
+            self.goal_value.setText(f"{float(goal['value']):.1f} 小时")
+            self.goal_sub.setText("目标来自健康 App；仪表盘与睡眠页会按目标做对比。")
+        else:
+            self.goal_value.setText("--")
+            self.goal_sub.setText("健康 App 中没有找到睡眠目标。")
 
 
 # ---------------------------------------------------------------------------
@@ -1730,6 +2312,7 @@ class SettingsPage(QWidget):
                 f"（重复 {summary.get('samples_dupe', 0):,}）\n"
                 f"新增运动：{summary.get('workouts_new', 0):,} 条"
                 f"（重复 {summary.get('workouts_dupe', 0):,}）\n"
+                f"活动圆环：{summary.get('activity_summaries', 0):,} 天\n"
                 f"耗时：{summary.get('duration_s', 0)} 秒",
             )
         self._refresh_import_labels()

@@ -13,6 +13,7 @@ import shutil
 import sys
 import tempfile
 import time
+from datetime import datetime, timedelta
 from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -53,8 +54,6 @@ def seed(db: Database) -> None:
     # 24 小时心率（每 10 分钟）
     ts = now - 24 * 3600
     while ts <= now:
-        from datetime import datetime
-
         hour = datetime.fromtimestamp(ts).hour
         base = 58 + (6 if 6 <= hour < 9 else 0) + (14 if 17 <= hour < 20 else 0)
         if hour < 6:
@@ -87,6 +86,119 @@ def seed(db: Database) -> None:
                     unit="ms",
                 )
             )
+            samples.append(
+                _sample(
+                    f"demo-oxygen-{day}",
+                    "oxygen_saturation",
+                    resting_ts + 600,
+                    resting_ts + 660,
+                    round(rng.uniform(0.95, 0.99), 3),
+                    unit="%",
+                )
+            )
+            samples.append(
+                _sample(
+                    f"demo-resp-{day}",
+                    "respiratory_rate",
+                    resting_ts + 900,
+                    resting_ts + 960,
+                    round(rng.uniform(14.5, 17.5), 1),
+                    unit="count/min",
+                )
+            )
+            samples.append(
+                _sample(
+                    f"demo-wrist-{day}",
+                    "wrist_temperature",
+                    resting_ts - 600,
+                    resting_ts - 540,
+                    round(rng.uniform(35.3, 35.9), 2),
+                    unit="degC",
+                )
+            )
+            samples.append(
+                _sample(
+                    f"demo-breath-{day}",
+                    "breathing_disturbances",
+                    resting_ts - 300,
+                    resting_ts - 240,
+                    round(rng.uniform(1.1, 2.0), 2),
+                    unit="count",
+                )
+            )
+        if resting_ts + 5 * 3600 <= now:
+            walk_ts = day_start + 12 * 3600
+            samples.append(
+                _sample(
+                    f"demo-walkspeed-{day}",
+                    "walking_speed",
+                    walk_ts,
+                    walk_ts + 60,
+                    round(rng.uniform(4.0, 4.8), 2),
+                    unit="km/hr",
+                )
+            )
+            samples.append(
+                _sample(
+                    f"demo-step-length-{day}",
+                    "walking_step_length",
+                    walk_ts + 600,
+                    walk_ts + 660,
+                    round(rng.uniform(64, 70), 1),
+                    unit="cm",
+                )
+            )
+            samples.append(
+                _sample(
+                    f"demo-double-{day}",
+                    "walking_double_support",
+                    walk_ts + 1200,
+                    walk_ts + 1260,
+                    round(rng.uniform(0.26, 0.32), 3),
+                    unit="%",
+                )
+            )
+            samples.append(
+                _sample(
+                    f"demo-asym-{day}",
+                    "walking_asymmetry",
+                    walk_ts + 1800,
+                    walk_ts + 1860,
+                    round(rng.uniform(0.01, 0.05), 3),
+                    unit="%",
+                )
+            )
+        if day % 7 == 0 and resting_ts <= now:
+            samples.append(
+                _sample(
+                    f"demo-vo2-{day}",
+                    "vo2max",
+                    resting_ts + 1200,
+                    resting_ts + 1260,
+                    round(rng.uniform(45, 52), 1),
+                    unit="mL/min·kg",
+                )
+            )
+            samples.append(
+                _sample(
+                    f"demo-weight-{day}",
+                    "body_mass",
+                    resting_ts + 1500,
+                    resting_ts + 1560,
+                    round(rng.uniform(79, 83), 1),
+                    unit="kg",
+                )
+            )
+            samples.append(
+                _sample(
+                    f"demo-fat-{day}",
+                    "body_fat",
+                    resting_ts + 1800,
+                    resting_ts + 1860,
+                    round(rng.uniform(0.20, 0.24), 3),
+                    unit="%",
+                )
+            )
 
         for hour in range(24):
             start = day_start + hour * 3600
@@ -102,6 +214,48 @@ def seed(db: Database) -> None:
                 continue
             samples.append(_sample(f"demo-steps-{day}-{hour}", "steps", start, start + 3600, steps, unit="count"))
             samples.append(_sample(f"demo-energy-{day}-{hour}", "active_energy", start, start + 3600, energy, unit="kcal"))
+            samples.append(_sample(f"demo-basal-{day}-{hour}", "basal_energy", start, start + 3600, round(energy * 0.6, 1), unit="kcal"))
+
+    samples.append(
+        _sample(
+            "demo-headphone-1",
+            "headphone_audio",
+            today + 9 * 3600,
+            today + 10 * 3600,
+            78.0,
+            unit="dBASPL",
+        )
+    )
+    samples.append(
+        _sample(
+            "demo-environment-1",
+            "environmental_audio",
+            today + 10 * 3600,
+            today + 11 * 3600,
+            64.0,
+            unit="dBASPL",
+        )
+    )
+    samples.append(
+        _sample(
+            "demo-daylight-1",
+            "daylight_minutes",
+            today + 12 * 3600,
+            today + 13 * 3600,
+            75.0,
+            unit="min",
+        )
+    )
+    samples.append(
+        _sample(
+            "demo-sleep-goal",
+            "sleep_goal",
+            today - 3600,
+            today - 3540,
+            8.0,
+            unit="hr",
+        )
+    )
 
     # 最近 14 晚睡眠（醒来日记账）
     stage_plan = [
@@ -166,6 +320,22 @@ def seed(db: Database) -> None:
             received_at=now - index * 3600 - 240,
         )
 
+    summaries = []
+    for day in range(14):
+        date_text = (datetime.now() - timedelta(days=day)).strftime("%Y-%m-%d")
+        summaries.append(
+            {
+                "date": date_text,
+                "move_kcal": rng.randint(360, 660),
+                "move_goal_kcal": 500,
+                "exercise_min": rng.randint(18, 65),
+                "exercise_goal_min": 30,
+                "stand_hours": rng.randint(7, 12),
+                "stand_goal_hours": 12,
+            }
+        )
+    db.upsert_activity_summaries(summaries)
+
 
 def main() -> int:
     from PySide6.QtGui import QFont
@@ -196,7 +366,16 @@ def main() -> int:
     window.show()
     app.processEvents()
 
-    names = ["dashboard", "trends", "workouts", "sync", "ai", "settings"]
+    names = [
+        "dashboard",
+        "trends",
+        "metrics",
+        "sleep",
+        "workouts",
+        "sync",
+        "ai",
+        "settings",
+    ]
     for index, name in enumerate(names):
         window.navigate(index)
         for _ in range(6):

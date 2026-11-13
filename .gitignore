@@ -18,6 +18,10 @@ dist/
 *.db-shm
 data/
 
+# Private Apple Health exports (not for git)
+*.zip
+导出.zip
+
 # OS / IDE
 .DS_Store
 Thumbs.db

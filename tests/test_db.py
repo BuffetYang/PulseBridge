@@ -115,6 +115,9 @@ def test_sleep_night_picks_best_source(tmp_path) -> None:
     assert night["deep_min"] == 120.0
     assert night["core_min"] == 240.0
     assert night["rem_min"] == 60.0
+    segments = analytics.sleep_segments(db, night)
+    assert segments
+    assert {stage for _start, _end, stage in segments} == {"core", "deep", "rem"}
     series = analytics.daily_series(db, "sleep", 2)
     assert series[-1]["value"] == 7.0
     db.close()
@@ -199,3 +202,28 @@ def test_content_fingerprint_dedupes_across_channels(tmp_path) -> None:
     assert db.insert_workouts([workout_b]) == (0, 1)
     assert db.stats()["workouts"] == 1
     db.close()
+
+
+def test_legacy_sample_type_and_fingerprint_migration(tmp_path) -> None:
+    path = tmp_path / "test.db"
+    db = Database(path)
+    base = int(time.time()) - 3600
+    db.insert_samples(
+        [_sample("legacy-speed", "walkingspeed", base, 4.5, "iPhone", unit="km/hr")]
+    )
+    db.close()
+
+    reopened = Database(path)
+    row = reopened.latest_sample("walking_speed")
+    assert row is not None
+    assert row["value"] == 4.5
+    assert row["fingerprint"]
+    assert reopened.latest_sample("walkingspeed") is None
+    reopened.close()
+
+
+def test_percentage_display_scaling() -> None:
+    assert analytics.display_value("oxygen_saturation", 0.96) == 96
+    assert analytics.display_value("oxygen_saturation", 96) == 96
+    assert analytics.display_value("body_fat", 0.212) == 21.2
+    assert analytics.display_value("steps", 0.5) == 0.5

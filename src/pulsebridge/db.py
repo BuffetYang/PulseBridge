@@ -13,7 +13,12 @@ import time
 from pathlib import Path
 from typing import Any, Iterable
 
-from .util import normalize_workout_type, sample_fingerprint, workout_fingerprint
+from .util import (
+    normalize_type,
+    normalize_workout_type,
+    sample_fingerprint,
+    workout_fingerprint,
+)
 
 SCHEMA_VERSION = 1
 
@@ -54,6 +59,18 @@ CREATE TABLE IF NOT EXISTS workouts (
 );
 CREATE INDEX IF NOT EXISTS idx_workouts_start ON workouts(start_ts);
 
+CREATE TABLE IF NOT EXISTS activity_summaries (
+    date            TEXT PRIMARY KEY,
+    move_kcal       REAL,
+    move_goal_kcal  REAL,
+    exercise_min    REAL,
+    exercise_goal_min REAL,
+    stand_hours     REAL,
+    stand_goal_hours REAL,
+    updated_at      INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_activity_summaries_date ON activity_summaries(date);
+
 CREATE TABLE IF NOT EXISTS ingest_events (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     received_at   INTEGER NOT NULL,
@@ -85,7 +102,9 @@ class Database:
             self._conn.execute("PRAGMA foreign_keys=ON")
             self._conn.executescript(_SCHEMA)
             self._conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
-            # 把旧版本/第三方协议留下的原始运动类型（如 activity_4）转成可读类型
+            self._add_fingerprint_columns()
+            # 把旧版本/第三方协议留下的原始类型转成可读类型
+            activity_changed = False
             existing = self._conn.execute(
                 "SELECT DISTINCT activity_type FROM workouts"
             ).fetchall()
@@ -93,11 +112,43 @@ class Database:
                 normalized = normalize_workout_type(current)
                 if normalized and normalized != current:
                     self._conn.execute(
-                        "UPDATE workouts SET activity_type = ? WHERE activity_type = ?",
+                        "UPDATE workouts SET activity_type = ?, fingerprint = NULL "
+                        "WHERE activity_type = ?",
                         (normalized, current),
                     )
+                    activity_changed = True
+            if activity_changed:
+                self._conn.execute("DROP INDEX IF EXISTS idx_workouts_fingerprint")
+
+            type_changed = False
+            existing_types = self._conn.execute(
+                "SELECT DISTINCT type FROM samples"
+            ).fetchall()
+            for (current,) in existing_types:
+                normalized = normalize_type(current)
+                if normalized and normalized != current:
+                    self._conn.execute(
+                        "UPDATE samples SET type = ?, fingerprint = NULL WHERE type = ?",
+                        (normalized, current),
+                    )
+                    type_changed = True
+            if type_changed:
+                self._conn.execute("DROP INDEX IF EXISTS idx_samples_fingerprint")
+
             self._ensure_fingerprint_schema()
             self._conn.commit()
+
+    def _add_fingerprint_columns(self) -> None:
+        sample_cols = {
+            row[1] for row in self._conn.execute("PRAGMA table_info(samples)")
+        }
+        if "fingerprint" not in sample_cols:
+            self._conn.execute("ALTER TABLE samples ADD COLUMN fingerprint TEXT")
+        workout_cols = {
+            row[1] for row in self._conn.execute("PRAGMA table_info(workouts)")
+        }
+        if "fingerprint" not in workout_cols:
+            self._conn.execute("ALTER TABLE workouts ADD COLUMN fingerprint TEXT")
 
     def _ensure_fingerprint_schema(self) -> None:
         """为旧数据库补 fingerprint 列、回填、去重并建立唯一索引。"""
@@ -277,6 +328,60 @@ class Database:
             )
             inserted = self._conn.total_changes - before
         return inserted, len(rows) - inserted
+
+    def upsert_activity_summaries(self, rows: Iterable[dict[str, Any]]) -> int:
+        """每日活动圆环（Move / Exercise / Stand）按日期 upsert。"""
+        values = list(rows)
+        if not values:
+            return 0
+        now = int(time.time())
+        with self._lock, self._conn:
+            for row in values:
+                self._conn.execute(
+                    """
+                    INSERT INTO activity_summaries
+                        (date, move_kcal, move_goal_kcal, exercise_min,
+                         exercise_goal_min, stand_hours, stand_goal_hours, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(date) DO UPDATE SET
+                        move_kcal=excluded.move_kcal,
+                        move_goal_kcal=excluded.move_goal_kcal,
+                        exercise_min=excluded.exercise_min,
+                        exercise_goal_min=excluded.exercise_goal_min,
+                        stand_hours=excluded.stand_hours,
+                        stand_goal_hours=excluded.stand_goal_hours,
+                        updated_at=excluded.updated_at
+                    """,
+                    (
+                        row["date"],
+                        row.get("move_kcal"),
+                        row.get("move_goal_kcal"),
+                        row.get("exercise_min"),
+                        row.get("exercise_goal_min"),
+                        row.get("stand_hours"),
+                        row.get("stand_goal_hours"),
+                        now,
+                    ),
+                )
+        return len(values)
+
+    def activity_summaries(self, days: int = 7) -> list[dict]:
+        from datetime import date, timedelta
+
+        start = (date.today() - timedelta(days=max(1, days) - 1)).isoformat()
+        return [
+            dict(row)
+            for row in self._rows(
+                "SELECT * FROM activity_summaries WHERE date >= ? ORDER BY date",
+                (start,),
+            )
+        ]
+
+    def latest_activity_summary(self) -> dict | None:
+        rows = self._rows(
+            "SELECT * FROM activity_summaries ORDER BY date DESC LIMIT 1"
+        )
+        return dict(rows[0]) if rows else None
 
     def record_ingest(
         self,

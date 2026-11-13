@@ -17,6 +17,7 @@ import json
 import re
 import zlib
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any
 
 from .util import normalize_sleep_stage, normalize_type, normalize_workout_type
@@ -66,6 +67,7 @@ class PulsBatch:
     samples: list[dict[str, Any]] = field(default_factory=list)
     workouts: list[dict[str, Any]] = field(default_factory=list)
     deletions: list[str] = field(default_factory=list)
+    activities: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def total(self) -> int:
@@ -226,6 +228,39 @@ def _convert_sample(line: dict[str, Any]) -> tuple[str, dict[str, Any]] | None:
     )
 
 
+def _activity_summary_row(payload: dict[str, Any]) -> dict[str, Any] | None:
+    local_date = payload.get("localDate")
+    if isinstance(local_date, str) and re.fullmatch(r"\d{4}-\d{2}-\d{2}", local_date):
+        date_text = local_date
+    else:
+        stamp = _ms(payload.get("date"))
+        if stamp is None:
+            return None
+        offset = 0
+        context = payload.get("temporalContext")
+        if isinstance(context, dict) and isinstance(
+            context.get("utcOffsetSeconds"), (int, float)
+        ):
+            offset = float(context["utcOffsetSeconds"])
+        date_text = datetime.fromtimestamp(
+            stamp / 1000 + offset, tz=timezone.utc
+        ).date().isoformat()
+
+    def number(key: str) -> float | None:
+        value = payload.get(key)
+        return float(value) if isinstance(value, (int, float)) else None
+
+    return {
+        "date": date_text,
+        "move_kcal": number("moveKcal"),
+        "move_goal_kcal": number("moveGoalKcal"),
+        "exercise_min": number("exerciseMin"),
+        "exercise_goal_min": number("exerciseGoalMin"),
+        "stand_hours": number("standHours"),
+        "stand_goal_hours": number("standGoalHours"),
+    }
+
+
 def parse_batch(text: str) -> PulsBatch:
     """解析一个 Puls Sync Protocol v1 批次；无效输入抛 ``PulsError``。"""
     lines = [line for line in text.split("\n") if line.strip()]
@@ -281,17 +316,22 @@ def parse_batch(text: str) -> PulsBatch:
         if isinstance(deleted, dict) and is_uuid(deleted.get("uuid")):
             batch.deletions.append(str(deleted["uuid"]).lower())
 
-    # 其余行类型（路线、序列、聚合、活动圆环、profile）本应用暂不展示，
-    # 但仍需按声明的数量消费掉，保持行对齐。
-    skip = (
-        counts["routeCount"]
-        + counts["seriesCount"]
-        + counts["aggregateCount"]
-        + counts["activitySummaryCount"]
-        + counts["profileCount"]
-    )
-    for _ in range(skip):
-        take("ignored line")
+    # 其余行类型（路线、序列、聚合）本应用暂不展示，但仍需按声明数量消费。
+    for number in range(1, counts["routeCount"] + 1):
+        take(f"route {number}")
+    for number in range(1, counts["seriesCount"] + 1):
+        take(f"series {number}")
+    for number in range(1, counts["aggregateCount"] + 1):
+        take(f"aggregate {number}")
+    for number in range(1, counts["activitySummaryCount"] + 1):
+        line = take(f"activity summary {number}")
+        payload = line.get("activitySummary")
+        if isinstance(payload, dict):
+            row = _activity_summary_row(payload)
+            if row:
+                batch.activities.append(row)
+    for number in range(1, counts["profileCount"] + 1):
+        take(f"profile {number}")
 
     if index != len(lines):
         raise PulsError("unexpected trailing line after the declared counts")

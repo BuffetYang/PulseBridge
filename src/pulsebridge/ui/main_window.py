@@ -32,7 +32,9 @@ from .icons import app_icon, brand_pixmap
 from .pages import (
     AiPage,
     DashboardPage,
+    MetricsPage,
     SettingsPage,
+    SleepPage,
     SyncPage,
     TrendsPage,
     WorkoutsPage,
@@ -45,6 +47,8 @@ from .theme import COLORS
 NAV_ITEMS = [
     ("📊", "仪表盘"),
     ("📈", "趋势"),
+    ("🧭", "指标库"),
+    ("🌙", "睡眠"),
     ("🏃", "运动记录"),
     ("📡", "同步与配对"),
     ("✨", "AI 洞察"),
@@ -89,11 +93,16 @@ class MainWindow(QMainWindow):
             db,
             controller,
             self._open_guide,
-            lambda: self.navigate(2),
+            lambda: self.navigate(4),
             open_trend=self._open_trend,
-            open_sync=lambda: self.navigate(3),
+            open_sync=lambda: self.navigate(5),
+            open_sleep=lambda: self.navigate(3),
         )
         self.trends = TrendsPage(db)
+        self.metrics = MetricsPage(
+            db, self._open_trend, on_open_sleep=lambda: self.navigate(3)
+        )
+        self.sleep = SleepPage(db)
         self.workouts = WorkoutsPage(db)
         self.sync = SyncPage(
             db,
@@ -108,6 +117,8 @@ class MainWindow(QMainWindow):
         self.pages = [
             self.dashboard,
             self.trends,
+            self.metrics,
+            self.sleep,
             self.workouts,
             self.sync,
             self.ai,
@@ -203,7 +214,7 @@ class MainWindow(QMainWindow):
         open_action.triggered.connect(self._show_window)
         menu.addAction(open_action)
         sync_action = QAction("同步与配对", self)
-        sync_action.triggered.connect(lambda: self._show_page(3))
+        sync_action.triggered.connect(lambda: self._show_page(5))
         menu.addAction(sync_action)
         menu.addSeparator()
         quit_action = QAction("退出", self)

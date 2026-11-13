@@ -36,6 +36,7 @@ class ImportSummary:
     cancelled: bool = False
     duration_s: float = 0.0
     source_file: str = ""
+    activity_summaries: int = 0
 
     def as_dict(self) -> dict:
         return asdict(self)
@@ -93,18 +94,30 @@ def _energy_kcal(value: str | None, unit: str | None) -> float | None:
 
 
 def _find_export_xml(archive: zipfile.ZipFile) -> str:
-    names = archive.namelist()
-    preferred = [
-        name
-        for name in names
-        if name.replace("\\", "/").endswith("apple_health_export/export.xml")
+    """找到主数据 XML。
+
+    Apple 的英文导出叫 export.xml；中文系统可能叫「导出.xml」，zip 里甚至可能
+    呈现为乱码文件名。优先 export.xml，否则选择最大的非 export_cda.xml。
+    """
+    entries = [
+        info for info in archive.infolist() if info.filename.lower().endswith(".xml")
     ]
-    if preferred:
-        return preferred[0]
-    for name in names:
-        if name.replace("\\", "/").endswith("/export.xml") or name == "export.xml":
-            return name
-    raise HealthExportError("压缩包里没有找到 export.xml，请确认选择的是 Apple Health 导出的 zip")
+    candidates = [
+        info
+        for info in entries
+        if not info.filename.replace("\\", "/").lower().endswith("export_cda.xml")
+    ]
+    if not candidates:
+        raise HealthExportError("压缩包里没有找到健康数据 XML（export.xml / 导出.xml）")
+
+    preferred = [
+        info
+        for info in candidates
+        if info.filename.replace("\\", "/").lower().endswith("/export.xml")
+        or info.filename.lower() == "export.xml"
+    ]
+    chosen = preferred[0] if preferred else max(candidates, key=lambda item: item.file_size)
+    return chosen.filename
 
 
 def _record_to_sample(element: ET.Element) -> dict | None:
@@ -119,6 +132,22 @@ def _record_to_sample(element: ET.Element) -> dict | None:
         "device": attrs.get("device"),
     }
     return normalize_sample(raw)
+
+
+def _activity_summary_to_row(element: ET.Element) -> dict | None:
+    attrs = element.attrib
+    date_text = str(attrs.get("dateComponents") or attrs.get("date") or "")[:10]
+    if len(date_text) != 10:
+        return None
+    return {
+        "date": date_text,
+        "move_kcal": _num(attrs.get("activeEnergyBurned")),
+        "move_goal_kcal": _num(attrs.get("activeEnergyBurnedGoal")),
+        "exercise_min": _num(attrs.get("appleExerciseTime")),
+        "exercise_goal_min": _num(attrs.get("appleExerciseTimeGoal")),
+        "stand_hours": _num(attrs.get("appleStandHours")),
+        "stand_goal_hours": _num(attrs.get("appleStandHoursGoal")),
+    }
 
 
 def _workout_to_row(element: ET.Element) -> dict | None:
@@ -162,6 +191,7 @@ def _parse_stream(
 ) -> None:
     batch_samples: list[dict] = []
     batch_workouts: list[dict] = []
+    batch_activities: list[dict] = []
     last_flush = 0
 
     def flush() -> None:
@@ -176,6 +206,11 @@ def _parse_stream(
             summary.workouts_new += new
             summary.workouts_dupe += dupe
             batch_workouts.clear()
+        if batch_activities:
+            summary.activity_summaries += db.upsert_activity_summaries(
+                batch_activities
+            )
+            batch_activities.clear()
         if progress and summary.records - last_flush >= 1000:
             last_flush = summary.records
             progress(
@@ -209,10 +244,14 @@ def _parse_stream(
                 batch_workouts.append(workout)
             else:
                 summary.skipped += 1
+        elif tag == "ActivitySummary":
+            row = _activity_summary_to_row(element)
+            if row:
+                batch_activities.append(row)
         else:
             continue
 
-        if len(batch_samples) + len(batch_workouts) >= 2000:
+        if len(batch_samples) + len(batch_workouts) + len(batch_activities) >= 2000:
             flush()
             root.clear()
         elif summary.records % 2000 == 0 and summary.records:

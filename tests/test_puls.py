@@ -201,3 +201,50 @@ def test_probe_batch_and_unsupported_protocol(tmp_path) -> None:
     finally:
         controller.stop()
         db.close()
+
+
+def test_puls_activity_summary(tmp_path) -> None:
+    config, db, controller, _ = _start(tmp_path)
+    base = f"http://127.0.0.1:{controller.port}"
+    header = {
+        "schemaVersion": 1,
+        "clientVersion": "pulsebridge-test/1",
+        "batchID": str(uuid.uuid4()),
+        "deviceID": "test-device",
+        "type": "HKActivitySummaryTypeIdentifier",
+        "reason": "incremental",
+        "exportedAt": int(time.time() * 1000),
+        "sampleCount": 0,
+        "deletionCount": 0,
+        "routeCount": 0,
+        "seriesCount": 0,
+        "aggregateCount": 0,
+        "activitySummaryCount": 1,
+        "profileCount": 0,
+    }
+    line = {
+        "activitySummary": {
+            "localDate": "2026-11-12",
+            "moveKcal": 420.5,
+            "moveGoalKcal": 650,
+            "exerciseMin": 25,
+            "exerciseGoalMin": 30,
+            "standHours": 9,
+            "standGoalHours": 12,
+        }
+    }
+    body = gzip.compress(
+        ("\n".join(json.dumps(item) for item in (header, line)) + "\n").encode()
+    )
+    try:
+        status, response = _post(f"{base}/v1/batches", body, config.token)
+        assert status == 200, response
+        assert response["activitySummaries"] == 1
+        summary = db.latest_activity_summary()
+        assert summary is not None
+        assert summary["date"] == "2026-11-12"
+        assert summary["move_kcal"] == 420.5
+        assert summary["stand_hours"] == 9
+    finally:
+        controller.stop()
+        db.close()

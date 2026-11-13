@@ -150,10 +150,11 @@ class _Handler(BaseHTTPRequestHandler):
 
             samples_new, samples_dupe = self.app.db.insert_samples(batch.samples)
             workouts_new, workouts_dupe = self.app.db.insert_workouts(batch.workouts)
+            activities = self.app.db.upsert_activity_summaries(batch.activities)
             deleted = self.app.db.delete_by_uuids(batch.deletions)
 
             new_total = samples_new + workouts_new
-            if batch.total or deleted:
+            if batch.total or deleted or activities:
                 self.app.db.record_ingest(
                     remote=remote,
                     device="PulsHealth",
@@ -167,7 +168,7 @@ class _Handler(BaseHTTPRequestHandler):
                         f"batch {str(batch.header.get('batchID') or '')[:8]}"
                     ),
                 )
-            if new_total and self.app.on_ingest:
+            if (new_total or activities) and self.app.on_ingest:
                 try:
                     self.app.on_ingest(
                         {
@@ -176,6 +177,7 @@ class _Handler(BaseHTTPRequestHandler):
                             "samples_duplicate": samples_dupe,
                             "workouts_new": workouts_new,
                             "workouts_duplicate": workouts_dupe,
+                            "activity_summaries": activities,
                             "warnings": [],
                             "device": "PulsHealth",
                             "remote": remote,
@@ -194,7 +196,7 @@ class _Handler(BaseHTTPRequestHandler):
                     "routePoints": 0,
                     "seriesPoints": 0,
                     "aggregateSamples": 0,
-                    "activitySummaries": 0,
+                    "activitySummaries": activities,
                 },
             )
         except UnsupportedProtocol:

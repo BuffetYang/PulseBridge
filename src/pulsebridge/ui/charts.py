@@ -532,3 +532,232 @@ class StageBar(QWidget):
             painter.setBrush(color)
             painter.drawRoundedRect(QRectF(x, rect.top(), width, rect.height()), 5, 5)
             x += width + gap
+
+
+class RingMetric(QWidget):
+    """单个活动圆环：Move / Exercise / Stand。"""
+
+    def __init__(
+        self,
+        label: str,
+        unit: str,
+        color: str,
+        digits: int = 0,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.label = label
+        self.unit = unit
+        self.digits = digits
+        self._color = QColor(color)
+        self._value = 0.0
+        self._goal = 0.0
+        self.setMinimumSize(120, 150)
+
+    def set_data(self, value: float | None, goal: float | None) -> None:
+        self._value = max(0.0, float(value or 0))
+        self._goal = max(0.0, float(goal or 0))
+        self.update()
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        diameter = 76.0
+        center_x = self.width() / 2
+        ring = QRectF(center_x - diameter / 2, 8, diameter, diameter)
+
+        painter.setPen(
+            QPen(QColor("#223140"), 9, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
+        )
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawArc(ring, 90 * 16, -360 * 16)
+
+        progress = min(1.0, self._value / self._goal) if self._goal > 0 else 0.0
+        if progress > 0:
+            painter.setPen(
+                QPen(
+                    self._color,
+                    9,
+                    Qt.PenStyle.SolidLine,
+                    Qt.PenCapStyle.RoundCap,
+                )
+            )
+            painter.drawArc(ring, 90 * 16, int(-360 * 16 * progress))
+
+        painter.setPen(QPen(QColor(COLORS["text"])))
+        painter.setFont(_axis_font(self, 15, bold=True))
+        percent = f"{progress * 100:.0f}%" if self._goal > 0 else "--"
+        painter.drawText(ring, Qt.AlignmentFlag.AlignCenter, percent)
+
+        painter.setPen(QPen(QColor(COLORS["muted"])))
+        painter.setFont(_axis_font(self, 11))
+        painter.drawText(
+            QRectF(0, ring.bottom() + 8, self.width(), 18),
+            Qt.AlignmentFlag.AlignCenter,
+            self.label,
+        )
+        value_text = f"{self._value:.{self.digits}f}"
+        goal_text = f"{self._goal:.{self.digits}f}"
+        painter.setPen(QPen(QColor(COLORS["text"])))
+        painter.setFont(_axis_font(self, 11, bold=True))
+        painter.drawText(
+            QRectF(0, ring.bottom() + 26, self.width(), 18),
+            Qt.AlignmentFlag.AlignCenter,
+            f"{value_text} / {goal_text} {self.unit}".strip(),
+        )
+
+
+class Hypnogram(QWidget):
+    """睡眠阶段时间轴。"""
+
+    _ROWS = (
+        ("awake", "清醒", "#FFB347"),
+        ("rem", "REM", "#4CC9F0"),
+        ("core", "核心", "#B18CFF"),
+        ("deep", "深睡", "#5B9DFF"),
+    )
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setMinimumHeight(210)
+        self._segments: list[tuple[int, int, str]] = []
+        self._start = 0
+        self._end = 0
+
+    def set_data(
+        self, segments: Iterable[tuple[int, int, str]], start_ts: int, end_ts: int
+    ) -> None:
+        self._segments = list(segments)
+        self._start = start_ts
+        self._end = end_ts
+        self.update()
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        if not self._segments or self._end <= self._start:
+            painter.setPen(QPen(QColor(COLORS["subtle"])))
+            painter.setFont(_axis_font(self, 12))
+            painter.drawText(
+                self.rect(), Qt.AlignmentFlag.AlignCenter, "最近一夜没有睡眠阶段数据"
+            )
+            return
+
+        rect = QRectF(self.rect()).adjusted(52, 16, -14, -30)
+        row_names = [row[0] for row in self._ROWS]
+        row_height = rect.height() / len(self._ROWS)
+
+        painter.setFont(_axis_font(self, 10))
+        for index, (stage, label, color) in enumerate(self._ROWS):
+            y = rect.top() + row_height * index
+            painter.setPen(QPen(_GRID, 1, Qt.PenStyle.DashLine))
+            painter.drawLine(QPointF(rect.left(), y + row_height / 2),
+                             QPointF(rect.right(), y + row_height / 2))
+            painter.setPen(QPen(QColor(COLORS["muted"])))
+            painter.drawText(
+                QRectF(0, y, rect.left() - 8, row_height),
+                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+                label,
+            )
+
+        span = self._end - self._start
+        for start, end, stage in self._segments:
+            if stage == "in_bed":
+                continue
+            row_stage = "core" if stage in ("asleep_unspecified", "light") else stage
+            if row_stage not in row_names:
+                continue
+            row_index = row_names.index(row_stage)
+            x1 = rect.left() + (start - self._start) / span * rect.width()
+            x2 = rect.left() + (end - self._start) / span * rect.width()
+            width = max(1.5, x2 - x1 - 1)
+            y = rect.top() + row_height * row_index + row_height / 2 - 5
+            color = QColor(dict((row[0], row[2]) for row in self._ROWS)[row_stage])
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(color)
+            painter.drawRoundedRect(QRectF(x1, y, width, 10), 4, 4)
+
+        painter.setPen(QPen(_AXIS))
+        painter.setFont(_axis_font(self, 10))
+        for index in range(5):
+            fraction = index / 4
+            ts = self._start + span * fraction
+            x = rect.left() + rect.width() * fraction
+            label = datetime.fromtimestamp(ts).strftime("%H:%M")
+            painter.drawText(
+                QRectF(x - 30, rect.bottom() + 7, 60, 18),
+                Qt.AlignmentFlag.AlignHCenter,
+                label,
+            )
+
+
+class SleepStagesChart(QWidget):
+    """多夜睡眠阶段堆叠柱。"""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setMinimumHeight(230)
+        self._nights: list[dict] = []
+
+    def set_data(self, nights: Iterable[dict]) -> None:
+        self._nights = list(nights)
+        self.update()
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        if not self._nights:
+            painter.setPen(QPen(QColor(COLORS["subtle"])))
+            painter.setFont(_axis_font(self, 12))
+            painter.drawText(
+                self.rect(), Qt.AlignmentFlag.AlignCenter, "这段时间没有睡眠数据"
+            )
+            return
+
+        rect = QRectF(self.rect()).adjusted(44, 16, -14, -30)
+        max_hours = max(
+            (n["deep_min"] + n["core_min"] + n["rem_min"] + n["awake_min"]) / 60
+            for n in self._nights
+        )
+        max_hours = max(1.0, max_hours * 1.1)
+        painter.setFont(_axis_font(self, 10))
+        for index in range(4):
+            y = rect.top() + rect.height() * index / 3
+            painter.setPen(QPen(_GRID, 1, Qt.PenStyle.DashLine))
+            painter.drawLine(QPointF(rect.left(), y), QPointF(rect.right(), y))
+            painter.setPen(QPen(_AXIS))
+            painter.drawText(
+                QRectF(0, y - 8, rect.left() - 8, 16),
+                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+                f"{max_hours * (1 - index / 3):.0f}",
+            )
+
+        slot = rect.width() / max(1, len(self._nights))
+        bar_width = min(30.0, max(6.0, slot * 0.55))
+        stages = (
+            ("deep_min", "#5B9DFF"),
+            ("core_min", "#B18CFF"),
+            ("rem_min", "#4CC9F0"),
+            ("awake_min", "#FFB347"),
+        )
+        for index, night in enumerate(self._nights):
+            x = rect.left() + slot * (index + 0.5) - bar_width / 2
+            bottom = rect.bottom()
+            for key, color in stages:
+                hours = (night.get(key) or 0) / 60
+                height = hours / max_hours * rect.height()
+                if height <= 0:
+                    continue
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.setBrush(QColor(color))
+                painter.drawRect(QRectF(x, bottom - height, bar_width, height))
+                bottom -= height
+            if len(self._nights) <= 14 or index % max(1, len(self._nights) // 8) == 0:
+                painter.setPen(QPen(QColor(COLORS["muted"])))
+                painter.setFont(_axis_font(self, 10))
+                date_text = night["date"][5:].replace("-", "/")
+                painter.drawText(
+                    QRectF(x + bar_width / 2 - 24, rect.bottom() + 6, 48, 18),
+                    Qt.AlignmentFlag.AlignHCenter,
+                    date_text,
+                )
